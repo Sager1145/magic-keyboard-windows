@@ -320,7 +320,7 @@ namespace MagicKeyboard {
  // Both keycap rows share one grid: 13 square key widths (F1-F12, a gap, lock), as large
  // as the width allows up to MaxKey, centered.
  static class KeyGrid {
-  public const float Gap=6,Extra=10,MaxKey=120;
+  public const float Gap=6,Extra=10,MaxKey=200;
   public static float Key(int width){return Math.Min((width-1-Gap*12-Extra)/13f,MaxKey);}
   public static float Span(float key){return key*13+Gap*12+Extra;}
   public static float Left(int width,float key){return (width-1-Span(key))/2;}
@@ -342,7 +342,7 @@ namespace MagicKeyboard {
   public KeyboardRow(){SetStyle(ControlStyles.AllPaintingInWmPaint|ControlStyles.OptimizedDoubleBuffer|ControlStyles.UserPaint|ControlStyles.ResizeRedraw,true);Cursor=Cursors.Hand;Height=96;}
   // Height follows width so the keys stay square at any window size.
   static int HeightFor(int width){return (int)Math.Ceiling(KeyGrid.Key(width))+4;}
-  public override Size GetPreferredSize(Size proposed){int w=proposed.Width>0 && proposed.Width<100000?proposed.Width:Width;return new Size(w,HeightFor(w));}
+  public override Size GetPreferredSize(Size proposed){return new Size(Width,HeightFor(Width));}
   protected override void OnSizeChanged(EventArgs e){base.OnSizeChanged(e);KeyGrid.Fit(this,HeightFor(Width));}
   protected override void OnHandleCreated(EventArgs e){base.OnHandleCreated(e);KeyGrid.Fit(this,HeightFor(Width));}
   public void Bind(Func<int,string> glyphOf,Func<int,string> tipOf){glyph=glyphOf;tip=tipOf;Invalidate();}
@@ -356,7 +356,7 @@ namespace MagicKeyboard {
   public bool ActionsFirst{get{return actionsFirst;}set{if(actionsFirst==value)return;actionsFirst=value;Invalidate();}}
   RectangleF Cap(int i){
    float w=Math.Min(KeyGrid.Key(Width),Height-4),x=KeyGrid.Left(Width,w)+i*(w+KeyGrid.Gap)+(i>11?KeyGrid.Extra:0);
-   return new RectangleF(x,(Height-3-w)/2,w,w);
+   return new RectangleF(x,1,w,w);
   }
   int HitTest(Point p){for(int i=0;i<Keys.Length;i++)if(Cap(i).Contains(p))return i;return -1;}
   protected override void OnMouseMove(MouseEventArgs e){int h=HitTest(e.Location);if(h==hover)return;hover=h;Invalidate();toolTip.SetToolTip(this,h<0?"":tip(Keys[h]));}
@@ -384,9 +384,9 @@ namespace MagicKeyboard {
   int selected=-1,hover=-1,held;readonly ToolTip toolTip=new ToolTip();
   public event EventHandler SelectedChanged;
   public ModifierRow(){SetStyle(ControlStyles.AllPaintingInWmPaint|ControlStyles.OptimizedDoubleBuffer|ControlStyles.UserPaint|ControlStyles.ResizeRedraw,true);Cursor=Cursors.Hand;Height=64;}
-  // Height follows width so the keys keep their proportions at any window size.
-  static int HeightFor(int width){return (int)Math.Ceiling(KeyGrid.Key(width)*0.68f)+4;}
-  public override Size GetPreferredSize(Size proposed){int w=proposed.Width>0 && proposed.Width<100000?proposed.Width:Width;return new Size(w,HeightFor(w));}
+  // Height follows width: the same key height as KeyboardRow at any window size.
+  static int HeightFor(int width){return (int)Math.Ceiling(KeyGrid.Key(width))+4;} // same height as the top row
+  public override Size GetPreferredSize(Size proposed){return new Size(Width,HeightFor(Width));}
   protected override void OnSizeChanged(EventArgs e){base.OnSizeChanged(e);KeyGrid.Fit(this,HeightFor(Width));}
   protected override void OnHandleCreated(EventArgs e){base.OnHandleCreated(e);KeyGrid.Fit(this,HeightFor(Width));}
   // label/changed take a modifier index (0-4); tip takes a key id.

@@ -28,7 +28,7 @@ namespace MagicKeyboard {
   Configuration draft;ActionRunner runner;
   KeyboardRow keyboard;Segmented mode,press;RoundCombo action;Field valueField;TextBox value;RoundButton valueButton,tryIt,reset;
   Label title,subtitle,valueLabel,hint,error,status,live;Chip driverPill,trayPill,batteryPill;Stepper holdTime;FlowLayoutPanel holdRow;
-  TableLayoutPanel editor;
+  TableLayoutPanel editor;Panel header;Label modHint;
   ModifierRow modifiers;Segmented actsAs;Label actionLabel;FlowLayoutPanel modRow;
   bool filling;int key,gesture,lastAction=-1;
   readonly System.Windows.Forms.Timer statusPoll=new System.Windows.Forms.Timer{Interval=1000};
@@ -38,7 +38,7 @@ namespace MagicKeyboard {
   public MainForm() {
    try{draft=Configuration.Load();}catch(Exception e){MessageBox.Show("Saved profile could not be read. Defaults will be used.\n"+e.Message,Theme.ProductName);draft=Configuration.Create();}
    Text=Theme.ProductName;Font=Theme.Body;BackColor=Theme.Back;ForeColor=Theme.Ink;
-   MinimumSize=new Size(900,700);Size=new Size(980,750);StartPosition=FormStartPosition.CenterScreen;AutoScaleMode=AutoScaleMode.Dpi;
+   MinimumSize=new Size(480,420);Size=new Size(980,750);StartPosition=FormStartPosition.CenterScreen;AutoScaleMode=AutoScaleMode.Dpi;
    DoubleBuffered=true;
    try{Icon=Theme.AppIcon();}catch(Exception){}
    BuildUi();Select(0,0);
@@ -53,33 +53,41 @@ namespace MagicKeyboard {
   }
 
   static Label MakeLabel(string text,float size,FontStyle style,Color color){return new Label{Text=text,AutoSize=true,Font=new Font("Segoe UI",size,style),ForeColor=color,BackColor=Color.Transparent};}
-  static Chip Pill(){return new Chip{Margin=new Padding(10,8,0,0)};}
+  static Chip Pill(){return new Chip{Margin=new Padding(0)};}
   static RoundButton FlatButton(string text,bool primary){return new RoundButton(text,primary);}
   static Panel Card(Control content){
-   Panel card=new Panel{Dock=DockStyle.Fill,BackColor=Theme.Back,Padding=new Padding(20,16,20,16),Margin=new Padding(0,0,0,12)};
+   Panel card=new Panel{Dock=DockStyle.Fill,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,BackColor=Theme.Back,Padding=new Padding(20,16,20,16),Margin=new Padding(0,0,0,12)};
    card.Paint+=(s,e)=>Theme.Shape(e.Graphics,card,Theme.Card,Theme.Line);card.Resize+=(s,e)=>card.Invalidate();
    content.Dock=DockStyle.Fill;card.Controls.Add(content);return card;
   }
 
   void BuildUi() {
-   TableLayoutPanel page=new TableLayoutPanel{Dock=DockStyle.Fill,Padding=new Padding(24,18,24,12),ColumnCount=1,RowCount=6,BackColor=Theme.Back};
+   // The page is as tall as its content needs, and at least as tall as the window: when the
+   // window is smaller than the content it scrolls instead of cutting anything off.
+   Panel host=new Panel{Dock=DockStyle.Fill,AutoScroll=true,BackColor=Theme.Back};
+   // Its width always leaves room for the scrollbar, so the scrollbar appearing never
+   // changes the layout (which would resize the keys and hide the scrollbar again).
+   int bar=SystemInformation.VerticalScrollBarWidth;
+   TableLayoutPanel page=new TableLayoutPanel{Location=Point.Empty,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,Padding=new Padding(24,18,Math.Max(4,24-bar),12),ColumnCount=1,RowCount=6,BackColor=Theme.Back};
+   page.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
    page.RowStyles.Add(new RowStyle(SizeType.AutoSize));page.RowStyles.Add(new RowStyle(SizeType.AutoSize));page.RowStyles.Add(new RowStyle(SizeType.AutoSize));page.RowStyles.Add(new RowStyle(SizeType.AutoSize));
    page.RowStyles.Add(new RowStyle(SizeType.Percent,100));page.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-   Controls.Add(page);
+   host.Controls.Add(page);Controls.Add(host);
+   host.Resize+=(s,e)=>{int w=Math.Max(200,host.Width-bar);page.MinimumSize=new Size(w,host.ClientSize.Height);page.MaximumSize=new Size(w,0);Reflow();};
 
    // Header: name, live status, top-row mode
-   TableLayoutPanel header=new TableLayoutPanel{Dock=DockStyle.Fill,AutoSize=true,ColumnCount=2,Margin=new Padding(0,0,0,12)};
-   header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,330));
-   FlowLayoutPanel name=new FlowLayoutPanel{AutoSize=true,WrapContents=false,Margin=new Padding(0)};
+   // Laid out by LayoutHeader, so its height is exactly what it shows at any width.
+   header=new Panel{Dock=DockStyle.Fill,Height=60,Margin=new Padding(0,0,0,12),BackColor=Theme.Back};
    int mark=(int)(40*DeviceDpi/96f);
-   name.Controls.Add(new PictureBox{Image=Theme.Logo(mark,false,Color.Empty),Size=new Size(mark,mark),Margin=new Padding(0,2,10,0)});
-   name.Controls.Add(MakeLabel(Theme.ProductName,20,FontStyle.Bold,Theme.Ink));
-   driverPill=Pill();trayPill=Pill();batteryPill=Pill();batteryPill.Visible=false;name.Controls.Add(driverPill);name.Controls.Add(batteryPill);name.Controls.Add(trayPill);
-   header.Controls.Add(name,0,0);
-   mode=new Segmented{Items=new[]{"F1–F12 first","Actions first"},Dock=DockStyle.Top,Margin=new Padding(0,6,0,0),Font=Font};
+   header.Controls.Add(new PictureBox{Image=Theme.Logo(mark,false,Color.Empty),Size=new Size(mark,mark)});
+   header.Controls.Add(MakeLabel(Theme.ProductName,20,FontStyle.Bold,Theme.Ink));
+   driverPill=Pill();trayPill=Pill();batteryPill=Pill();batteryPill.Visible=false;header.Controls.Add(driverPill);header.Controls.Add(batteryPill);header.Controls.Add(trayPill);
+   mode=new Segmented{Items=new[]{"F1–F12 first","Actions first"},Width=330,Font=Font};
    mode.Selected=draft.RequireFn?0:1;
    mode.SelectedChanged+=(s,e)=>{if(filling)return;draft.RequireFn=mode.Selected==0;keyboard.ActionsFirst=!draft.RequireFn;Select(key,gesture);Changed();};
-   header.Controls.Add(mode,1,0);
+   header.Controls.Add(mode);
+   header.Resize+=(s,e)=>LayoutHeader();
+   foreach(Control chip in new Control[]{driverPill,batteryPill,trayPill}){chip.SizeChanged+=(s,e)=>LayoutHeader();chip.VisibleChanged+=(s,e)=>LayoutHeader();}
    page.Controls.Add(header,0,0);
 
    // Keyboard: the top row (F1-F12, lock) as clickable keycaps
@@ -93,17 +101,19 @@ namespace MagicKeyboard {
    modifiers.SelectedChanged+=(s,e)=>Select(modifiers.SelectedKey,0);
    page.Controls.Add(modifiers,0,2);
    // Live line: the key or combination being pressed and what it does
-   live=new Label{AutoSize=true,Font=new Font("Segoe UI",11f,FontStyle.Bold),ForeColor=Theme.Muted,Margin=new Padding(3,0,3,12),Text=LiveIdle};
+   live=new Label{AutoSize=true,AutoEllipsis=true,Font=new Font("Segoe UI",11f,FontStyle.Bold),ForeColor=Theme.Muted,Margin=new Padding(3,0,3,12),Text=LiveIdle};
    page.Controls.Add(live,0,3);
 
    // Editor card
-   editor=new TableLayoutPanel{ColumnCount=1,RowCount=10,BackColor=Theme.Card};
+   editor=new TableLayoutPanel{ColumnCount=1,RowCount=10,BackColor=Theme.Card,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink};
+   editor.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
+   editor.Resize+=(s,e)=>Reflow();
    foreach(SizeType t in new[]{SizeType.AutoSize,SizeType.AutoSize,SizeType.AutoSize,SizeType.AutoSize,SizeType.AutoSize,SizeType.AutoSize,SizeType.Absolute,SizeType.AutoSize,SizeType.Percent,SizeType.AutoSize})
     editor.RowStyles.Add(t==SizeType.Percent?new RowStyle(SizeType.Percent,100):t==SizeType.Absolute?new RowStyle(SizeType.Absolute,34):new RowStyle(t));
    TableLayoutPanel titleRow=new TableLayoutPanel{AutoSize=true,Dock=DockStyle.Fill,ColumnCount=2,Margin=new Padding(0)};
-   titleRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));titleRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,330));
+   titleRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));titleRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
    title=MakeLabel("F1",18,FontStyle.Bold,Theme.Ink);titleRow.Controls.Add(title,0,0);
-   press=new Segmented{Items=new[]{"Tap","Double tap","Hold"},Dock=DockStyle.Top,Margin=new Padding(0,4,0,0),Font=Font};
+   press=new Segmented{Items=new[]{"Tap","Double tap","Hold"},Anchor=AnchorStyles.Top|AnchorStyles.Right,Width=330,Margin=new Padding(12,4,0,0),Font=Font};
    press.SelectedChanged+=(s,e)=>{if(!filling)Select(key,press.Selected);};
    titleRow.Controls.Add(press,1,0);
    editor.Controls.Add(titleRow,0,0);
@@ -147,7 +157,7 @@ namespace MagicKeyboard {
    modRow=new FlowLayoutPanel{AutoSize=true,Dock=DockStyle.Top,FlowDirection=FlowDirection.TopDown,WrapContents=false,BackColor=Theme.Card,Margin=new Padding(0,4,0,8)};
    actsAs=new Segmented{Items=new[]{"Control (Ctrl)","Option (Alt)","Command (Win)"},Width=420,Margin=new Padding(3,0,3,12),Font=Font};
    actsAs.SelectedChanged+=(s,e)=>{if(filling||key<20)return;draft.Modifiers[key-20]=Configuration.ModifierTargets[actsAs.Selected];modifiers.Invalidate();Select(key,0);Changed();};
-   Label modHint=MakeLabel("The keyboard driver remaps the key itself, so it works in every app, even when this app isn't running. Shortcuts follow: with Command acting as Ctrl, Command+C copies.",9,FontStyle.Regular,Theme.Muted);
+   modHint=MakeLabel("The keyboard driver remaps the key itself, so it works in every app, even when this app isn't running. Shortcuts follow: with Command acting as Ctrl, Command+C copies.",9,FontStyle.Regular,Theme.Muted);
    modHint.MaximumSize=new Size(800,0);modHint.Margin=new Padding(3,0,3,0);
    modRow.Controls.AddRange(new Control[]{actsAs,modHint});
    FlowLayoutPanel extras=new FlowLayoutPanel{AutoSize=true,Dock=DockStyle.Top,FlowDirection=FlowDirection.TopDown,WrapContents=false,BackColor=Theme.Card,Margin=new Padding(0)};
@@ -165,6 +175,42 @@ namespace MagicKeyboard {
    };
    footer.Controls.Add(status,0,0);footer.Controls.Add(restore,1,0);
    page.Controls.Add(footer,0,5);
+  }
+
+  // Fits the layout to the window width: the mode switch moves under the name when the
+  // header is narrow, wide switches shrink, and text wraps to the card.
+  // Logo, name and status chips flow left to right, wrapping when the header is narrow;
+  // the mode switch sits at the right of the first line, or on its own line below.
+  bool layingOut;
+  void LayoutHeader(){
+   if(header==null || layingOut)return;
+   layingOut=true;
+   try{
+    int width=Math.Max(120,header.ClientSize.Width),line=48,gap=10,x=0,y=0;
+    foreach(Control c in header.Controls){
+     if(c==mode || !c.Visible)continue;
+     if(x>0 && x+c.Width>width){x=0;y+=line+6;}
+     c.Location=new Point(x,y+(line-c.Height)/2);
+     x+=c.Width+gap;
+    }
+    int modeWidth=Math.Min(330,width);
+    mode.Width=modeWidth;
+    if(y==0 && x+modeWidth+14<=width)mode.Location=new Point(width-modeWidth,(line-mode.Height)/2);
+    else{y+=line+6;mode.Location=new Point(0,y);line=mode.Height;}
+    int height=y+line;
+    if(header.Height!=height)header.Height=height;
+   }finally{layingOut=false;}
+  }
+
+  void Reflow(){
+   if(header==null || editor==null)return;
+   LayoutHeader();
+   int width=header.ClientSize.Width;
+   int inner=Math.Max(160,editor.ClientSize.Width-8);
+   foreach(Label l in new[]{subtitle,hint,error,modHint})if(l!=null)l.MaximumSize=new Size(inner,0);
+   live.MaximumSize=new Size(Math.Max(160,width),0);
+   press.Width=Math.Max(180,Math.Min(330,inner-title.PreferredSize.Width-24));
+   actsAs.Width=Math.Max(200,Math.Min(420,inner));
   }
 
   void DrawAction(object sender,DrawItemEventArgs e){
@@ -223,6 +269,7 @@ namespace MagicKeyboard {
 
   // Editor -----------------------------------------------------------------
   void Select(int k,int g){
+   if(IsHandleCreated)BeginInvoke((Action)Reflow); // the title width changes with the key
    if(k>=20){SelectModifier(k-20);return;}
    modifiers.SelectedKey=k;actionLabel.Text="Action";action.Visible=hint.Visible=tryIt.Visible=true;modRow.Visible=false;
    if(k==13)g=0; // Fn itself has only a tap action

@@ -101,6 +101,11 @@ extern "C" {
 		PDEVICE_OBJECT Pdo; // the PDO
 		IO_REMOVE_LOCK RemoveLock;
 		VHFHANDLE Vhf; // virtual HID device that carries the mapped actions
+		// Bluetooth battery level shown by Windows (DEVPKEY_Bluetooth_Battery on the PDO).
+		PIO_WORKITEM BatteryWork; // writes the property at PASSIVE_LEVEL
+		LONG BatteryShown; // level last written, 0 = none
+		LONG BatteryPending; // level to write next
+		LONG BatteryQueued; // 1 while BatteryWork is queued
 	} DEVICE_EXTENSION, *PDEVICE_EXTENSION;
 
 	NTSTATUS DriverEntry(IN PDRIVER_OBJECT driverObject, IN PUNICODE_STRING registryPath);

@@ -12,6 +12,11 @@ DRIVER_ADD_DEVICE AddDevice;
 // {2C5B0E4A-6F0B-4B2E-9C61-0D7E2F1A0320}
 DEFINE_GUID(GUID_MAGICKB_CONTROL, 0x2c5b0e4a, 0x6f0b, 0x4b2e, 0x9c, 0x61, 0x0d, 0x7e, 0x2f, 0x1a, 0x03, 0x20);
 
+// The battery level Windows shows in Settings > Bluetooth & devices (DEVPKEY_Bluetooth_Battery,
+// a BYTE percentage). The Bluetooth stack sets it only for hands-free and LE battery devices;
+// for this keyboard the driver sets it from the keyboard's own battery report.
+static const DEVPROPKEY DEVPKEY_OrchardBluetoothBattery = { { 0x104ea319, 0x6ee2, 0x4701, { 0xbd, 0x47, 0x8d, 0xdb, 0xf4, 0x25, 0xbb, 0xe5 } }, 2 };
+
 ///////////////////////////////////////////////////////////////////////////////
 // Control device and report ring
 //
@@ -378,6 +383,8 @@ NTSTATUS AddDevice(IN PDRIVER_OBJECT driverObject, IN PDEVICE_OBJECT pdo)
 		//will create the expected data structures for reads and writes.
 		fido->Flags |= fdo->Flags & (DO_DIRECT_IO | DO_BUFFERED_IO | DO_POWER_PAGABLE);
 
+		fidoExt->BatteryWork = IoAllocateWorkItem(fido);
+
 		fido->Flags &= ~DO_DEVICE_INITIALIZING; // Clear the DO_DEVICE_INITIALIZING flag so that we can get IRPs
 
 	} while (FALSE);
@@ -415,6 +422,8 @@ void RemoveDevice(IN PDEVICE_OBJECT fido)
 	KeSetEvent(&g_ControlGate, IO_NO_INCREMENT, FALSE);
 
 	PDEVICE_EXTENSION fidoExt = (PDEVICE_EXTENSION)fido->DeviceExtension;
+	if (fidoExt->BatteryWork)
+		IoFreeWorkItem(fidoExt->BatteryWork); // the remove lock wait ensured it isn't running
 	if (fidoExt->LowerDeviceObject)
 		IoDetachDevice(fidoExt->LowerDeviceObject);
 
@@ -610,6 +619,43 @@ NTSTATUS InternalIoctlComplete(PDEVICE_OBJECT device, PIRP irp, PVOID context)
     return STATUS_CONTINUE_COMPLETION;
 }
 
+// Writes the newest battery level to the PDO's Bluetooth battery property (PASSIVE_LEVEL).
+static VOID BatteryWorker(PDEVICE_OBJECT fido, PVOID context)
+{
+    UNREFERENCED_PARAMETER(context);
+    PDEVICE_EXTENSION extension = (PDEVICE_EXTENSION)fido->DeviceExtension;
+    InterlockedExchange(&extension->BatteryQueued, 0);
+    LONG level = InterlockedCompareExchange(&extension->BatteryPending, 0, 0);
+    if (level != extension->BatteryShown)
+    {
+        UCHAR value = (UCHAR)level;
+        NTSTATUS status = IoSetDevicePropertyData(extension->Pdo, &DEVPKEY_OrchardBluetoothBattery, LOCALE_NEUTRAL, 0,
+            DEVPROP_TYPE_BYTE, sizeof(value), &value);
+        if (NT_SUCCESS(status))
+            extension->BatteryShown = level;
+        else
+            DebugPrint("BatteryWorker(): IoSetDevicePropertyData failed: 0x%x", status);
+    }
+    IoReleaseRemoveLock(&extension->RemoveLock, extension->BatteryWork);
+}
+
+// Report 0x90 ([status][charge 0-100]) arrives unsolicited and as the reply to the tray
+// app's GET_REPORT; publish a changed level from a work item.
+static void NoteBattery(PDEVICE_EXTENSION extension, UCHAR level)
+{
+    if (level < 1 || level > 100 || !extension->BatteryWork)
+        return;
+    InterlockedExchange(&extension->BatteryPending, level);
+    if (level == extension->BatteryShown || InterlockedCompareExchange(&extension->BatteryQueued, 1, 0) != 0)
+        return;
+    if (!NT_SUCCESS(IoAcquireRemoveLock(&extension->RemoveLock, extension->BatteryWork)))
+    {
+        InterlockedExchange(&extension->BatteryQueued, 0);
+        return;
+    }
+    IoQueueWorkItem(extension->BatteryWork, BatteryWorker, DelayedWorkQueue, NULL);
+}
+
 /* Bluetooth: HidBth reads the HID interrupt channel with L2CAP ACL transfers. An input
    report arrives as a HID DATA|INPUT header (0xA1) followed by the same 10-byte report
    (ID 1) the keyboard sends over USB, so the same engine rewrites it in place. */
@@ -623,13 +669,20 @@ NTSTATUS BthComplete(PDEVICE_OBJECT device, PIRP irp, PVOID context)
     if (NT_SUCCESS(irp->IoStatus.Status) && transfer && NT_SUCCESS(transfer->Hdr.Status))
     {
         // BufferSize now holds the bytes received (bthddi.h).
-        if (transfer->BufferSize == MAGICKB_REPORT_LENGTH + 1)
+        ULONG length = transfer->BufferSize;
+        UCHAR* data = NULL;
+        if (length >= 4)
         {
-            UCHAR* data = (UCHAR*)transfer->Buffer;
+            data = (UCHAR*)transfer->Buffer;
             if (!data && transfer->BufferMDL)
                 data = MmGetSystemAddressForMdlSafe(transfer->BufferMDL, NormalPagePriority | MdlMappingNoExecute);
-            if (data && data[0] == 0xA1 && data[1] == 1)
+        }
+        if (data && data[0] == 0xA1)
+        {
+            if (data[1] == 1 && length == MAGICKB_REPORT_LENGTH + 1)
                 EngineProcessReport(data + 1, extension->Vhf);
+            else if (data[1] == 0x90)
+                NoteBattery(extension, data[3]); // [0xA1][0x90][status][charge]
         }
     }
 
