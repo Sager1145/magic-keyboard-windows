@@ -27,11 +27,12 @@ namespace MagicKeyboard {
 
   Configuration draft;ActionRunner runner;
   KeyboardRow keyboard;Segmented mode,press;RoundCombo action;Field valueField;TextBox value;RoundButton valueButton,tryIt,reset;
-  Label title,subtitle,valueLabel,hint,error,status,live;Chip driverPill,trayPill,batteryPill;Stepper holdTime;FlowLayoutPanel holdRow;FileSystemWatcher liveWatch;int liveSeq=-1;
+  Label title,subtitle,valueLabel,hint,error,status,live;Chip driverPill,trayPill,batteryPill;Stepper holdTime;FlowLayoutPanel holdRow;
   TableLayoutPanel editor;
   ModifierRow modifiers;Segmented actsAs;Label actionLabel;FlowLayoutPanel modRow;
   bool filling;int key,gesture,lastAction=-1;
   readonly System.Windows.Forms.Timer statusPoll=new System.Windows.Forms.Timer{Interval=1000};
+  readonly ToolTip chipTips=new ToolTip();
   readonly System.Windows.Forms.Timer apply=new System.Windows.Forms.Timer{Interval=450};
 
   public MainForm() {
@@ -42,16 +43,11 @@ namespace MagicKeyboard {
    try{Icon=Theme.AppIcon();}catch(Exception){}
    BuildUi();Select(0,0);
    apply.Tick+=(s,e)=>{apply.Stop();Apply();};
-   HandleCreated+=(s,e)=>Theme.TitleBar(this);
+   HandleCreated+=(s,e)=>{Theme.TitleBar(this);LiveKeys.MarkSettings(Handle);};
    Load+=(s,e)=>{
     runner=new ActionRunner(SetStatus);
     try{AgentWindow.EnsureRunning();}catch(Exception){}
     statusPoll.Tick+=(a,b)=>PollStatus();statusPoll.Start();PollStatus();
-    try{
-     Directory.CreateDirectory(Configuration.Folder);
-     liveWatch=new FileSystemWatcher(Configuration.Folder,Path.GetFileName(AgentWindow.StatusFile)){NotifyFilter=NotifyFilters.LastWrite|NotifyFilters.Size,SynchronizingObject=this};
-     liveWatch.Changed+=(a,b)=>ReadLive();liveWatch.EnableRaisingEvents=true;
-    }catch(Exception){}
    };
    FormClosing+=(s,e)=>{if(apply.Enabled){apply.Stop();Apply();}};
   }
@@ -86,18 +82,18 @@ namespace MagicKeyboard {
    header.Controls.Add(mode,1,0);
    page.Controls.Add(header,0,0);
 
-   // Keyboard: the top row plus fn, as clickable keycaps
-   keyboard=new KeyboardRow{Dock=DockStyle.Fill,Margin=new Padding(0,0,0,12),Font=Font};
+   // Keyboard: the top row (F1-F12, lock) as clickable keycaps
+   keyboard=new KeyboardRow{Dock=DockStyle.Top,Margin=new Padding(0,0,0,12),Font=Font};
    keyboard.Bind(k=>Theme.Glyph(KeyCapAction(k)),k=>KeyName(k)+": "+Summary(k));keyboard.ActionsFirst=!draft.RequireFn;
    keyboard.SelectedChanged+=(s,e)=>Select(keyboard.SelectedKey,0);
    page.Controls.Add(keyboard,0,1);
-   // Modifier keys: control, option, command on both sides of the space bar
-   modifiers=new ModifierRow{Dock=DockStyle.Fill,Margin=new Padding(0,0,0,12),Font=Font};
-   modifiers.Bind(m=>TargetShort(draft.Modifiers[m]),m=>draft.Modifiers[m]!=Configuration.ModifierDefaults[m],m=>ModifierTitle(m)+": acts as "+TargetLong(draft.Modifiers[m]));
-   modifiers.SelectedChanged+=(s,e)=>Select(20+modifiers.Selected,0);
+   // Bottom row: fn, then control, option and command on both sides of the space bar
+   modifiers=new ModifierRow{Dock=DockStyle.Top,Margin=new Padding(0,0,0,12),Font=Font};
+   modifiers.Bind(()=>Theme.Glyph(KeyCapAction(13)),m=>TargetShort(draft.Modifiers[m]),m=>draft.Modifiers[m]!=Configuration.ModifierDefaults[m],k=>k==13?KeyName(13)+": "+Summary(13):ModifierTitle(k-20)+": acts as "+TargetLong(draft.Modifiers[k-20]));
+   modifiers.SelectedChanged+=(s,e)=>Select(modifiers.SelectedKey,0);
    page.Controls.Add(modifiers,0,2);
    // Live line: the key or combination being pressed and what it does
-   live=new Label{AutoSize=true,Font=new Font("Segoe UI",11f,FontStyle.Bold),ForeColor=Theme.Muted,Margin=new Padding(3,0,3,12),Text="Press a function key to see it here."};
+   live=new Label{AutoSize=true,Font=new Font("Segoe UI",11f,FontStyle.Bold),ForeColor=Theme.Muted,Margin=new Padding(3,0,3,12),Text=LiveIdle};
    page.Controls.Add(live,0,3);
 
    // Editor card
@@ -138,7 +134,7 @@ namespace MagicKeyboard {
    hint=MakeLabel("",9,FontStyle.Regular,Theme.Muted);hint.MaximumSize=new Size(800,0);hint.Margin=new Padding(3,12,3,0);editor.Controls.Add(hint,0,4);
    FlowLayoutPanel buttons=new FlowLayoutPanel{AutoSize=true,Dock=DockStyle.Fill,BackColor=Theme.Card};
    tryIt=FlatButton("Try it",true);tryIt.Click+=(s,e)=>TryAction();
-   reset=FlatButton("Use default",false);reset.Click+=(s,e)=>{if(key>=20){draft.Modifiers[key-20]=Configuration.ModifierDefaults[key-20];modifiers.Invalidate();Select(key,0);Changed();return;}draft.SetBinding(key,gesture,Configuration.DefaultBinding(key,gesture));Select(key,gesture);keyboard.Invalidate();Changed();};
+   reset=FlatButton("Use default",false);reset.Click+=(s,e)=>{if(key>=20){draft.Modifiers[key-20]=Configuration.ModifierDefaults[key-20];modifiers.Invalidate();Select(key,0);Changed();return;}draft.SetBinding(key,gesture,Configuration.DefaultBinding(key,gesture));Select(key,gesture);keyboard.Invalidate();modifiers.Invalidate();Changed();};
    buttons.Controls.AddRange(new Control[]{tryIt,reset});editor.Controls.Add(buttons,0,9);
    // Lock hold time, shown with Lock's Hold action
    holdRow=new FlowLayoutPanel{AutoSize=true,Dock=DockStyle.Top,WrapContents=false,BackColor=Theme.Card,Margin=new Padding(0,14,0,8)};
@@ -212,7 +208,7 @@ namespace MagicKeyboard {
   void SelectModifier(int m){
    key=20+m;gesture=0;
    filling=true;
-   keyboard.SelectedKey=-1;modifiers.Selected=m;
+   keyboard.SelectedKey=-1;modifiers.SelectedKey=20+m;
    press.Visible=false;holdRow.Visible=false;
    title.Text=ModifierTitle(m);
    subtitle.Text="The "+ModifierRow.Symbols[m]+" "+ModifierRow.Names[m]+" key "+(m<3?"left":"right")+" of the space bar.  Default: "+TargetLong(Configuration.ModifierDefaults[m])+".";
@@ -228,7 +224,7 @@ namespace MagicKeyboard {
   // Editor -----------------------------------------------------------------
   void Select(int k,int g){
    if(k>=20){SelectModifier(k-20);return;}
-   modifiers.Selected=-1;actionLabel.Text="Action";action.Visible=hint.Visible=tryIt.Visible=true;modRow.Visible=false;
+   modifiers.SelectedKey=k;actionLabel.Text="Action";action.Visible=hint.Visible=tryIt.Visible=true;modRow.Visible=false;
    if(k==13)g=0; // Fn itself has only a tap action
    key=k;gesture=g;
    Binding b=draft.GetBinding(k,g);
@@ -298,7 +294,7 @@ namespace MagicKeyboard {
   void Edited(){
    Binding b=new Binding(ActionId(),value.Text);
    draft.SetBinding(key,gesture,b);
-   keyboard.Invalidate();
+   keyboard.Invalidate();modifiers.Invalidate();
    hint.Text=Hint(b);
    try{ValidateBinding(b);ShowError(null);}catch(ArgumentException e){ShowError(e.Message);apply.Stop();status.ForeColor=Theme.Muted;status.Text="Not saved yet · finish this key's setting.";return;}
    Changed();
@@ -312,16 +308,24 @@ namespace MagicKeyboard {
   void PollStatus(){
    bool driver;
    try{using(Driver.Open(0x80000000)){}driver=true;}catch(Exception){driver=false;}
-   SetPill(driverPill,driver,driver?"Keyboard connected":"Keyboard not connected");
+   string link=null;
+   try{link=Battery.Link();}catch(Exception){}
+   // The chip names the connection; the driver maps keys the same way over both.
+   string name=link=="bluetooth"?"Bluetooth":"USB-C";
+   if(link==null && !driver)SetPill(driverPill,false,"Keyboard not connected");
+   else SetPill(driverPill,driver,driver?name+" connected":name+" · driver not running");
+   string why=link==null && !driver?"":driver
+    ?(link=="bluetooth"?"Connected over Bluetooth.":"Connected with the USB-C cable.")+" The Orchard Keys driver is mapping keys."
+    :"The keyboard is connected but the Orchard Keys driver isn't running on this connection. Reconnect the keyboard or restart Windows.";
+   if(chipTips.GetToolTip(driverPill)!=why)chipTips.SetToolTip(driverPill,why);
    bool tray=AgentWindow.Running();
    SetPill(trayPill,tray,tray?"Tray on":"Tray off");
-   if(tray)ReadLive();
    ShowBattery(tray);
   }
-  // Battery level as last read by the tray app (status line 5: percent;charging).
+  // Battery level as last read by the tray app (status line 2: percent;charging).
   void ShowBattery(bool tray){
    string[] f=new string[0];
-   if(tray){try{string[] lines=File.ReadAllText(AgentWindow.StatusFile).Split('\n');if(lines.Length>=5)f=lines[4].Trim().Split(';');}catch(IOException){}catch(UnauthorizedAccessException){}}
+   if(tray){try{string[] lines=File.ReadAllText(AgentWindow.StatusFile).Split('\n');if(lines.Length>=2)f=lines[1].Trim().Split(';');}catch(IOException){}catch(UnauthorizedAccessException){}}
    int percent;
    if(f.Length<2 || !int.TryParse(f[0],out percent)){batteryPill.Visible=false;return;}
    bool charging=f[1]=="1";
@@ -329,20 +333,18 @@ namespace MagicKeyboard {
    batteryPill.ForeColor=!charging && percent<=10?Theme.Bad:charging?Theme.Good:Theme.Ink;
    batteryPill.Visible=true;
   }
-  // Shows the key or combination the tray app last reported, lit while held.
-  void ReadLive(){
-   string[] lines;
-   try{lines=File.ReadAllText(AgentWindow.StatusFile).Split('\n');}catch(IOException){return;}catch(UnauthorizedAccessException){return;}
-   if(lines.Length<4 || !lines[2].StartsWith("Fn driver · "))return;
-   string[] f=lines[3].Split(';');int held,k,fn,seq;
-   if(f.Length<4 || !int.TryParse(f[0],out held) || !int.TryParse(f[1],out k) || !int.TryParse(f[2],out fn) || !int.TryParse(f[3],out seq))return;
-   keyboard.Held=held;
-   string pressed=lines[2].Substring("Fn driver · ".Length).Trim();
-   if(seq==0)return;
-   string does=Outcome(k,fn!=0);
-   live.Text=(held!=0?"":"Last: ")+pressed+(does.Length==0?"":"   →   "+does);
-   live.ForeColor=held!=0?Theme.Accent:Theme.Muted;
-   liveSeq=seq;
+  const string LiveIdle="Press a function key to see it here.";
+  // Keys the tray app reports while this window is open (LiveKeys); shown only while held.
+  protected override void WndProc(ref Message m){
+   if(LiveKeys.Message!=0 && m.Msg==LiveKeys.Message){
+    int newest;PhysicalKeys keys=LiveKeys.Decode(m.WParam,m.LParam,out newest);
+    keyboard.Held=keys.Held;modifiers.Held=keys.Held;
+    if(keys.Held==0){live.Text=LiveIdle;live.ForeColor=Theme.Muted;return;}
+    string does=Outcome(newest,keys.Fn);
+    live.Text=keys.Describe()+(does.Length==0?"":"   →   "+does);live.ForeColor=Theme.Accent;
+    return;
+   }
+   base.WndProc(ref m);
   }
   // What pressing key k does with the current profile.
   string Outcome(int k,bool fn){
@@ -356,7 +358,7 @@ namespace MagicKeyboard {
    pill.ForeColor=ok?Theme.Good:Theme.Muted;
   }
   void SetStatus(string text){if(IsDisposed)return;if(InvokeRequired){BeginInvoke((Action)(()=>SetStatus(text)));return;}status.ForeColor=Theme.Muted;status.Text=text;}
-  protected override void Dispose(bool disposing){if(disposing){statusPoll.Dispose();apply.Dispose();if(liveWatch!=null)liveWatch.Dispose();}base.Dispose(disposing);}
+  protected override void Dispose(bool disposing){if(disposing){statusPoll.Dispose();apply.Dispose();chipTips.Dispose();}base.Dispose(disposing);}
  }
  sealed class Recorder:Form {
   public string Result="";
@@ -369,6 +371,7 @@ namespace MagicKeyboard {
    if(args.Contains("--driver-test")){SelfTest.RunDriver();return;}
    if(args.Contains("--self-test")){SelfTest.Run();return;}
    if(args.Contains("--agent") || args.Contains("--background")){
+    if(AgentWindow.Elevated())return; // the tray app runs unelevated (it starts at sign-in)
     using(Mutex agent=new Mutex(false,AgentWindow.MutexName)){
      try{if(!agent.WaitOne(0))return;}catch(AbandonedMutexException){}
      Application.EnableVisualStyles();Application.Run(new AgentWindow(args.Contains("--observe")));

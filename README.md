@@ -1,9 +1,10 @@
 # Orchard Keys
 
 **Orchard Keys** makes Apple's **USB-C Magic Keyboard** (USB `05AC:0320`) work like it does on a Mac,
-on Windows 10/11 x64. It covers the function row, a usable **Fn** key and the
-**Lock** key (top right). A small kernel driver does the mapping, so everything works
-the moment it's installed, with or without the settings app running.
+on Windows 10/11 x64, over the **USB-C cable or Bluetooth**. It covers the function row, a
+usable **Fn** key, the **Lock** key (top right), the modifier keys and the battery level. A
+small kernel driver does the mapping, so everything works the moment it's installed, with or
+without the settings app running.
 
 | Key | Default |
 | --- | --- |
@@ -69,9 +70,11 @@ works by adding a hidden consumer-control collection to the keyboard and rewriti
 into the HID brightness usage, which Windows handles natively. This driver generalizes
 that idea:
 
-1. **`MagicKeyboardFn`**, a lower filter on the keyboard's USB interface
-   ([`driver/`](driver/)), reads each input report. It removes action-layer keys and Lock
-   from the report and runs the configured action.
+1. **`MagicKeyboardFn`** ([`driver/`](driver/)) reads each input report. Over USB it is a
+   lower filter on the keyboard's USB interface; over Bluetooth it sits below Windows'
+   HidBth driver and reads the HID interrupt channel. The keyboard sends the same report
+   both ways, so one mapping engine handles both: it remaps modifiers, removes
+   action-layer keys and Lock from the report and runs the configured action.
 2. Actions go out through a **virtual HID device** (Windows' in-box
    [VHF](https://learn.microsoft.com/windows-hardware/drivers/hid/virtual-hid-framework--vhf-)).
    Consumer usages handle brightness, volume, media and Calculator. System-control usages
@@ -86,6 +89,24 @@ that idea:
 
 The tray app stores your profile and writes it to the driver over `\\.\MagicKeyboardFn`.
 The driver keeps it in the registry, so mappings survive restarts without the app.
+
+The battery level comes from the keyboard's report 0x90: over USB from interface 0 (bound
+to WinUSB, since Windows' HID parser rejects that interface's descriptor), over Bluetooth
+from its HID battery collection.
+
+## Privacy and security
+
+- Nothing records key presses. The driver passes the tray app only modifiers, F1–F12, Fn
+  and Lock (other keys are removed), and the tray app forwards held keys only to an open
+  settings window, in memory.
+- Only the user at the physical console can talk to the driver: other sessions (fast user
+  switching, Remote Desktop) can't read presses or change mappings, and only one program
+  at a time can read events.
+- The tray app runs unelevated; it refuses to start as administrator, because it runs
+  commands from your per-user settings file.
+- The driver is **test-signed**: installing turns on Windows test signing and trusts this
+  project's certificate. Uninstall removes the certificate; it tells you how to turn test
+  signing off.
 
 ## Build
 

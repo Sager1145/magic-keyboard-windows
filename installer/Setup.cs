@@ -5,7 +5,9 @@ using System.Drawing;
 using System.Diagnostics;
 using System.ComponentModel;
 using System.Text.RegularExpressions;
+using System.Security.AccessControl;
 using System.Security.Cryptography.X509Certificates;
+using System.Security.Principal;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -17,6 +19,7 @@ namespace MagicKeyboardSetup {
  sealed class SetupForm:Form {
   static readonly string[] Files={"MagicKeyboardFn.inf","MagicKeyboardFn.sys","magickeyboardfn.cat","MagicKeyboardFn.cer","MagicKeyboardControls.exe"};
   const string HardwareId=@"USB\VID_05AC&PID_0320&MI_01",AuxHardwareId=@"USB\VID_05AC&PID_0320&MI_00";
+  const string BluetoothId=@"BTHENUM\{00001124-0000-1000-8000-00805f9b34fb}_VID&0001004c_PID&0320";
   const string RunKey=@"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
   readonly TextBox log;readonly Button install,uninstall;readonly Label headline;
 
@@ -71,14 +74,28 @@ namespace MagicKeyboardSetup {
     Log(code==0?"Test signing turned on. Restart Windows, then run Setup again.":"bcdedit failed ("+code+").");
     return;
    }
-   string folder=Path.Combine(Path.GetTempPath(),"MagicKeyboardSetup");
-   Directory.CreateDirectory(folder);
-   foreach(string name in Files)
-    using(Stream source=typeof(SetupForm).Assembly.GetManifestResourceStream("pkg/"+name))
-    using(FileStream target=File.Create(Path.Combine(folder,name)))source.CopyTo(target);
+   // Extract into a new folder only administrators and SYSTEM can write, so nothing else
+   // can swap the package between extraction and installation.
+   string folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"OrchardKeysSetup-"+Guid.NewGuid().ToString("N"));
+   DirectorySecurity acl=new DirectorySecurity();
+   acl.SetAccessRuleProtection(true,false);
+   foreach(WellKnownSidType sid in new[]{WellKnownSidType.BuiltinAdministratorsSid,WellKnownSidType.LocalSystemSid})
+    acl.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(sid,null),FileSystemRights.FullControl,InheritanceFlags.ContainerInherit|InheritanceFlags.ObjectInherit,PropagationFlags.None,AccessControlType.Allow));
+   Directory.CreateDirectory(folder,acl);
+   try{InstallFrom(folder);}
+   finally{try{Directory.Delete(folder,true);}catch(Exception){}}
+  }
+
+  static byte[] Resource(string name){
+   using(Stream source=typeof(SetupForm).Assembly.GetManifestResourceStream("pkg/"+name))
+   using(MemoryStream copy=new MemoryStream()){source.CopyTo(copy);return copy.ToArray();}
+  }
+
+  void InstallFrom(string folder){
+   foreach(string name in Files)File.WriteAllBytes(Path.Combine(folder,name),Resource(name));
    Log("Extracted the driver package.");
 
-   X509Certificate2 certificate=new X509Certificate2(Path.Combine(folder,"MagicKeyboardFn.cer"));
+   X509Certificate2 certificate=new X509Certificate2(Resource("MagicKeyboardFn.cer"));
    foreach(StoreName store in new[]{StoreName.Root,StoreName.TrustedPublisher}){
     X509Store s=new X509Store(store,StoreLocation.LocalMachine);s.Open(OpenFlags.ReadWrite);s.Add(certificate);s.Close();
    }
@@ -100,6 +117,8 @@ namespace MagicKeyboardSetup {
    // Interface 0 carries the battery report; it gets the Windows HID driver from the same package.
    bool auxReboot;
    if(UpdateDriverForPlugAndPlayDevices(IntPtr.Zero,AuxHardwareId,inf,1,out auxReboot)){reboot|=auxReboot;Log("Enabled the keyboard's battery reporting.");}
+   bool btReboot;
+   if(UpdateDriverForPlugAndPlayDevices(IntPtr.Zero,BluetoothId,inf,1,out btReboot)){reboot|=btReboot;Log("Installed the driver on the Bluetooth connection.");}
    try{Directory.Delete(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"MagicKeyboardControls"),true);}catch(Exception){}
    if(reboot)Log("Restart Windows to finish.");
    else{
@@ -123,8 +142,15 @@ namespace MagicKeyboardSetup {
     }
    }
    using(RegistryKey run=Registry.LocalMachine.OpenSubKey(RunKey,true)){if(run!=null)run.DeleteValue("MagicKeyboardControls",false);}
+   // Stop trusting the test certificate Install added.
+   X509Certificate2 certificate=new X509Certificate2(Resource("MagicKeyboardFn.cer"));
+   foreach(StoreName store in new[]{StoreName.Root,StoreName.TrustedPublisher}){
+    X509Store s=new X509Store(store,StoreLocation.LocalMachine);s.Open(OpenFlags.ReadWrite);s.Remove(certificate);s.Close();
+   }
+   Log("Removed the driver signing certificate from the trusted stores.");
    Exec("pnputil.exe","/scan-devices",out exit);
    Log(removed?"Removed. The keyboard is back on the standard Windows driver.":"No Magic Keyboard driver package was installed.");
+   if(TestSigning())Log("Windows test signing is still on. To turn it off, run \"bcdedit /set testsigning off\" as administrator and restart.");
   }
 
   [STAThread] static void Main(){Application.EnableVisualStyles();Application.Run(new SetupForm());}

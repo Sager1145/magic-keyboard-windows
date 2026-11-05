@@ -151,6 +151,34 @@ namespace MagicKeyboard {
    return menu;
   }
   // Fills a control's square corners with its parent's color, then draws the rounded shape.
+  // One keycap with a key name and an action icon: the icon big and the name in the corner,
+  // or the other way round. Held keys sink and light up.
+  public static void KeyCap(Graphics g,RectangleF r,string name,string glyph,bool iconBig,bool selected,bool hover,bool down){
+   if(down)r.Offset(0,2);
+   using(GraphicsPath cap=Round(r,Radius)){
+    using(SolidBrush fill=new SolidBrush(selected?Accent:hover?Hover:Card))g.FillPath(fill,cap);
+    if(down)using(SolidBrush glow=new SolidBrush(Color.FromArgb(70,Good)))g.FillPath(glow,cap);
+    using(Pen edge=new Pen(down?Good:selected?Accent:Line,down?2f:1f))g.DrawPath(edge,cap);
+   }
+   Color ink=selected?AccentInk:Ink,muted=selected?AccentInk:Muted;
+   float size=r.Width;
+   Rectangle corner=new Rectangle((int)(r.X+size*0.1f),(int)(r.Y+r.Height*0.07f),(int)(size*0.85f),(int)(r.Height*0.3f));
+   Rectangle middle=new Rectangle((int)r.X,(int)(r.Y+r.Height*0.3f),(int)size,(int)(r.Height*0.62f));
+   const TextFormatFlags center=TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter|TextFormatFlags.NoPadding;
+   const TextFormatFlags left=TextFormatFlags.Left|TextFormatFlags.NoPadding;
+   using(Font label=new Font("Segoe UI",Math.Max(7f,size*0.14f)))
+   using(Font icon=new Font(IconFamily,Math.Max(9f,size*0.17f)))
+   using(Font bigLabel=new Font("Segoe UI Semibold",Math.Max(9f,size*0.24f)))
+   using(Font bigIcon=new Font(IconFamily,Math.Max(12f,Math.Min(size,r.Height)*0.34f))){
+    if(iconBig && glyph.Length>0){
+     TextRenderer.DrawText(g,name,label,corner,muted,left);
+     TextRenderer.DrawText(g,glyph,bigIcon,middle,ink,center);
+    }else{
+     if(glyph.Length>0)TextRenderer.DrawText(g,glyph,icon,corner,muted,left);
+     TextRenderer.DrawText(g,name,bigLabel,middle,ink,center);
+    }
+   }
+  }
   public static void Shape(Graphics g,Control c,Color fill,Color edge){
    g.SmoothingMode=SmoothingMode.AntiAlias;
    g.Clear(c.Parent!=null?c.Parent.BackColor:Back);
@@ -289,26 +317,45 @@ namespace MagicKeyboard {
   }
  }
 
- // The Magic Keyboard's top row drawn as keycaps; click a key to edit it.
+ // Both keycap rows share one grid: 13 square key widths (F1-F12, a gap, lock), as large
+ // as the width allows up to MaxKey, centered.
+ static class KeyGrid {
+  public const float Gap=6,Extra=10,MaxKey=120;
+  public static float Key(int width){return Math.Min((width-1-Gap*12-Extra)/13f,MaxKey);}
+  public static float Span(float key){return key*13+Gap*12+Extra;}
+  public static float Left(int width,float key){return (width-1-Span(key))/2;}
+  // After a width change, ask the parent layout for the matching height (outside the
+  // current layout pass, so the rows below move too).
+  public static void Fit(Control row,int height){
+   if(row.Width<=0 || row.Height==height || !row.IsHandleCreated)return;
+   row.BeginInvoke((Action)(()=>{if(row.Height!=height){row.Height=height;if(row.Parent!=null)row.Parent.PerformLayout();}}));
+  }
+ }
+
+ // The Magic Keyboard's top row (F1-F12, lock) drawn as keycaps; click a key to edit it.
  sealed class KeyboardRow:Control {
-  // Display order: fn, F1-F12, Lock (data indices 13, 0-11, 12).
-  static readonly int[] Keys={13,0,1,2,3,4,5,6,7,8,9,10,11,12};
+  // Display order: F1-F12, Lock (data indices 0-11, 12).
+  static readonly int[] Keys={0,1,2,3,4,5,6,7,8,9,10,11,12};
   Func<int,string> glyph=k=>"";Func<int,string> tip=k=>"";
   int selected,hover=-1;readonly ToolTip toolTip=new ToolTip();
   public event EventHandler SelectedChanged;
   public KeyboardRow(){SetStyle(ControlStyles.AllPaintingInWmPaint|ControlStyles.OptimizedDoubleBuffer|ControlStyles.UserPaint|ControlStyles.ResizeRedraw,true);Cursor=Cursors.Hand;Height=96;}
+  // Height follows width so the keys stay square at any window size.
+  static int HeightFor(int width){return (int)Math.Ceiling(KeyGrid.Key(width))+4;}
+  public override Size GetPreferredSize(Size proposed){int w=proposed.Width>0 && proposed.Width<100000?proposed.Width:Width;return new Size(w,HeightFor(w));}
+  protected override void OnSizeChanged(EventArgs e){base.OnSizeChanged(e);KeyGrid.Fit(this,HeightFor(Width));}
+  protected override void OnHandleCreated(EventArgs e){base.OnHandleCreated(e);KeyGrid.Fit(this,HeightFor(Width));}
   public void Bind(Func<int,string> glyphOf,Func<int,string> tipOf){glyph=glyphOf;tip=tipOf;Invalidate();}
-  public int SelectedKey{get{return Keys[selected];}set{selected=Array.IndexOf(Keys,value);Invalidate();}}
+  // -1 when the selected key is in the other row.
+  public int SelectedKey{get{return selected<0?-1:Keys[selected];}set{selected=Array.IndexOf(Keys,value);Invalidate();}}
   int held;
   // Keys being pressed right now (data index bits), drawn lit.
   public int Held{get{return held;}set{if(held==value)return;held=value;Invalidate();}}
   bool actionsFirst;
   // Actions first: the action icon is the big label. F1-F12 first: the key name is.
   public bool ActionsFirst{get{return actionsFirst;}set{if(actionsFirst==value)return;actionsFirst=value;Invalidate();}}
-  // Square keycaps, as large as the row allows, centered.
   RectangleF Cap(int i){
-   float gap=6,extra=10,w=Math.Min((Width-1-gap*13-extra*2)/14f,Height-4);
-   float left=(Width-1-(w*14+gap*13+extra*2))/2,x=left+i*(w+gap)+(i>0?extra:0)+(i>12?extra:0);
+   float w=Math.Min(KeyGrid.Key(Width),Height-4),x=KeyGrid.Left(Width,w)+i*(w+KeyGrid.Gap)+(i>11?KeyGrid.Extra:0);
    return new RectangleF(x,(Height-3-w)/2,w,w);
   }
   int HitTest(Point p){for(int i=0;i<Keys.Length;i++)if(Cap(i).Contains(p))return i;return -1;}
@@ -317,82 +364,66 @@ namespace MagicKeyboard {
   protected override void OnMouseDown(MouseEventArgs e){int h=HitTest(e.Location);if(h<0||h==selected)return;selected=h;Invalidate();if(SelectedChanged!=null)SelectedChanged(this,EventArgs.Empty);}
   protected override void OnPaint(PaintEventArgs e){
    Graphics g=e.Graphics;g.SmoothingMode=SmoothingMode.AntiAlias;g.TextRenderingHint=TextRenderingHint.ClearTypeGridFit;g.Clear(Parent!=null?Parent.BackColor:Theme.Back);
-   float size=Keys.Length>0?Cap(0).Width:40;
-   using(Font label=new Font("Segoe UI",Math.Max(7f,size*0.14f)))
-   using(Font icon=new Font(Theme.IconFamily,Math.Max(9f,size*0.17f)))
-   using(Font bigLabel=new Font("Segoe UI Semibold",Math.Max(9f,size*0.24f)))
-   using(Font bigIcon=new Font(Theme.IconFamily,Math.Max(12f,size*0.34f))){
-    for(int i=0;i<Keys.Length;i++){
-     RectangleF r=Cap(i);int k=Keys[i];bool sel=i==selected,down=(held&(1<<k))!=0;
-     if(down)r.Offset(0,2);
-     using(GraphicsPath cap=Theme.Round(r,Theme.Radius)){
-      using(SolidBrush fill=new SolidBrush(sel?Theme.Accent:i==hover?Theme.Hover:Theme.Card))g.FillPath(fill,cap);
-      if(down)using(SolidBrush glow=new SolidBrush(Color.FromArgb(70,Theme.Good)))g.FillPath(glow,cap);
-      using(Pen edge=new Pen(down?Theme.Good:sel?Theme.Accent:Theme.Line,down?2f:1f))g.DrawPath(edge,cap);
-     }
-     Color ink=sel?Theme.AccentInk:Theme.Ink,muted=sel?Theme.AccentInk:Theme.Muted;
-     string name=k==13?"fn":k==12?"lock":"F"+(k+1);
-     string gl=glyph(k);
-     Rectangle corner=new Rectangle((int)(r.X+r.Width*0.1f),(int)(r.Y+r.Height*0.07f),(int)(r.Width*0.85f),(int)(r.Height*0.3f));
-     Rectangle middle=new Rectangle((int)r.X,(int)(r.Y+r.Height*0.3f),(int)r.Width,(int)(r.Height*0.62f));
-     const TextFormatFlags center=TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter|TextFormatFlags.NoPadding;
-     // fn and lock always lead with their action; F1-F12 follow the mode.
-     bool iconBig=(actionsFirst || k>=12) && gl.Length>0;
-     if(iconBig){
-      TextRenderer.DrawText(g,name,label,corner,muted,TextFormatFlags.Left|TextFormatFlags.NoPadding);
-      TextRenderer.DrawText(g,gl,bigIcon,middle,ink,center);
-     }else{
-      if(gl.Length>0)TextRenderer.DrawText(g,gl,icon,corner,muted,TextFormatFlags.Left|TextFormatFlags.NoPadding);
-      TextRenderer.DrawText(g,name,bigLabel,middle,ink,center);
-     }
-    }
+   for(int i=0;i<Keys.Length;i++){
+    int k=Keys[i];
+    // lock always leads with its action; F1-F12 follow the mode.
+    Theme.KeyCap(g,Cap(i),k==12?"lock":"F"+(k+1),glyph(k),actionsFirst || k==12,i==selected,i==hover,(held&(1<<k))!=0);
    }
   }
   protected override void Dispose(bool disposing){if(disposing)toolTip.Dispose();base.Dispose(disposing);}
  }
 
- // The bottom-row modifier keys (control, option, command | space | command, option),
- // aligned with KeyboardRow; each shows what it acts as. Click a key to edit it.
+ // The bottom row: fn, control, option, command | space | command, option, on the same
+ // grid as KeyboardRow. fn shows its action; modifiers show what they act as.
+ // Keys use the editor's ids: fn 13, modifiers 20-24 (Configuration.Modifiers order).
  sealed class ModifierRow:Control {
   public static readonly string[] Names={"control","option","command","command","option"};
   public static readonly string[] Symbols={"⌃","⌥","⌘","⌘","⌥"};
-  Func<int,string> label=m=>"";Func<int,bool> changed=m=>false;Func<int,string> tip=m=>"";
-  int selected=-1,hover=-1;readonly ToolTip toolTip=new ToolTip();
+  static readonly int[] Keys={13,20,21,22,23,24};
+  Func<int,string> label=m=>"";Func<int,bool> changed=m=>false;Func<int,string> tip=k=>"";Func<string> fnGlyph=()=>"";
+  int selected=-1,hover=-1,held;readonly ToolTip toolTip=new ToolTip();
   public event EventHandler SelectedChanged;
-  public ModifierRow(){SetStyle(ControlStyles.AllPaintingInWmPaint|ControlStyles.OptimizedDoubleBuffer|ControlStyles.UserPaint|ControlStyles.ResizeRedraw,true);Cursor=Cursors.Hand;Height=60;}
-  public void Bind(Func<int,string> labelOf,Func<int,bool> changedOf,Func<int,string> tipOf){label=labelOf;changed=changedOf;tip=tipOf;Invalidate();}
-  public int Selected{get{return selected;}set{if(selected==value)return;selected=value;Invalidate();}}
-  // Same span as KeyboardRow (14 square keys); keys 2 and 3 are wider, space fills the gap.
-  RectangleF Cap(int i){
-   float gap=6,extra=10,w=Math.Min((Width-1-gap*13-extra*2)/14f,92f);
-   float span=w*14+gap*13+extra*2,left=(Width-1-span)/2,h=Height-4;
-   float[] widths={w,w,w*1.3f,0,w*1.3f,w};
-   float fixedWidth=0;foreach(float x in widths)fixedWidth+=x;
-   widths[3]=span-fixedWidth-gap*5; // space bar
-   float pos=left;int slot=i<3?i:i+1; // slot 3 is the space bar
-   for(int k=0;k<slot;k++)pos+=widths[k]+gap;
+  public ModifierRow(){SetStyle(ControlStyles.AllPaintingInWmPaint|ControlStyles.OptimizedDoubleBuffer|ControlStyles.UserPaint|ControlStyles.ResizeRedraw,true);Cursor=Cursors.Hand;Height=64;}
+  // Height follows width so the keys keep their proportions at any window size.
+  static int HeightFor(int width){return (int)Math.Ceiling(KeyGrid.Key(width)*0.68f)+4;}
+  public override Size GetPreferredSize(Size proposed){int w=proposed.Width>0 && proposed.Width<100000?proposed.Width:Width;return new Size(w,HeightFor(w));}
+  protected override void OnSizeChanged(EventArgs e){base.OnSizeChanged(e);KeyGrid.Fit(this,HeightFor(Width));}
+  protected override void OnHandleCreated(EventArgs e){base.OnHandleCreated(e);KeyGrid.Fit(this,HeightFor(Width));}
+  // label/changed take a modifier index (0-4); tip takes a key id.
+  public void Bind(Func<string> fnGlyphOf,Func<int,string> labelOf,Func<int,bool> changedOf,Func<int,string> tipOf){fnGlyph=fnGlyphOf;label=labelOf;changed=changedOf;tip=tipOf;Invalidate();}
+  public int SelectedKey{get{return selected<0?-1:Keys[selected];}set{int i=Array.IndexOf(Keys,value);if(i==selected)return;selected=i;Invalidate();}}
+  // Same bits as KeyboardRow.Held; only fn (bit 13) is drawn here.
+  public int Held{get{return held;}set{if(held==value)return;held=value;Invalidate();}}
+  // Slots: fn, control, option, command, space, command, option.
+  RectangleF Slot(int slot){
+   float w=KeyGrid.Key(Width),span=KeyGrid.Span(w),left=KeyGrid.Left(Width,w),gap=KeyGrid.Gap,h=Height-4;
+   float[] widths={w,w,w,w*1.3f,0,w*1.3f,w};
+   float used=0;foreach(float x in widths)used+=x;
+   widths[4]=span-used-gap*6;
+   float pos=left;for(int k=0;k<slot;k++)pos+=widths[k]+gap;
    return new RectangleF(pos,1,widths[slot],h);
   }
-  RectangleF Space(){RectangleF a=Cap(2),b=Cap(3);return new RectangleF(a.Right+6,a.Y,b.X-a.Right-12,a.Height);}
-  int HitTest(Point p){for(int i=0;i<Names.Length;i++)if(Cap(i).Contains(p))return i;return -1;}
-  protected override void OnMouseMove(MouseEventArgs e){int h=HitTest(e.Location);if(h==hover)return;hover=h;Invalidate();toolTip.SetToolTip(this,h<0?"":tip(h));}
+  RectangleF Cap(int i){return Slot(i<4?i:i+1);} // skip the space bar
+  int HitTest(Point p){for(int i=0;i<Keys.Length;i++)if(Cap(i).Contains(p))return i;return -1;}
+  protected override void OnMouseMove(MouseEventArgs e){int h=HitTest(e.Location);if(h==hover)return;hover=h;Invalidate();toolTip.SetToolTip(this,h<0?"":tip(Keys[h]));}
   protected override void OnMouseLeave(EventArgs e){hover=-1;Invalidate();}
   protected override void OnMouseDown(MouseEventArgs e){int h=HitTest(e.Location);if(h<0||h==selected)return;selected=h;Invalidate();if(SelectedChanged!=null)SelectedChanged(this,EventArgs.Empty);}
   protected override void OnPaint(PaintEventArgs e){
-   Graphics g=e.Graphics;g.SmoothingMode=SmoothingMode.AntiAlias;g.Clear(Parent!=null?Parent.BackColor:Theme.Back);
-   using(GraphicsPath space=Theme.Round(Space(),Theme.Radius))using(Pen dashed=new Pen(Theme.Line){DashStyle=DashStyle.Dash})g.DrawPath(dashed,space);
+   Graphics g=e.Graphics;g.SmoothingMode=SmoothingMode.AntiAlias;g.TextRenderingHint=TextRenderingHint.ClearTypeGridFit;g.Clear(Parent!=null?Parent.BackColor:Theme.Back);
+   using(GraphicsPath space=Theme.Round(Slot(4),Theme.Radius))using(Pen dashed=new Pen(Theme.Line){DashStyle=DashStyle.Dash})g.DrawPath(dashed,space);
+   Theme.KeyCap(g,Cap(0),"fn",fnGlyph(),true,selected==0,hover==0,(held&(1<<13))!=0);
    float size=Cap(0).Width;
    using(Font small=new Font("Segoe UI",Math.Max(7f,size*0.14f)))
    using(Font big=new Font("Segoe UI Semibold",Math.Max(9f,size*0.22f))){
-    for(int i=0;i<Names.Length;i++){
-     RectangleF r=Cap(i);bool sel=i==selected;
+    for(int m=0;m<Names.Length;m++){
+     int i=m+1;RectangleF r=Cap(i);bool sel=i==selected,moved=changed(m);
      using(GraphicsPath cap=Theme.Round(r,Theme.Radius)){
       using(SolidBrush fill=new SolidBrush(sel?Theme.Accent:i==hover?Theme.Hover:Theme.Card))g.FillPath(fill,cap);
-      using(Pen edge=new Pen(sel?Theme.Accent:changed(i)?Theme.Accent:Theme.Line))g.DrawPath(edge,cap);
+      using(Pen edge=new Pen(sel||moved?Theme.Accent:Theme.Line))g.DrawPath(edge,cap);
      }
-     Color ink=sel?Theme.AccentInk:changed(i)?Theme.Accent:Theme.Ink,muted=sel?Theme.AccentInk:Theme.Muted;
-     TextRenderer.DrawText(g,Symbols[i]+" "+Names[i],small,new Rectangle((int)(r.X+size*0.1f),(int)(r.Y+r.Height*0.08f),(int)(r.Width-size*0.15f),(int)(r.Height*0.35f)),muted,TextFormatFlags.Left|TextFormatFlags.NoPadding|TextFormatFlags.EndEllipsis);
-     TextRenderer.DrawText(g,label(i),big,new Rectangle((int)r.X,(int)(r.Y+r.Height*0.38f),(int)r.Width,(int)(r.Height*0.55f)),ink,TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter|TextFormatFlags.NoPadding);
+     Color ink=sel?Theme.AccentInk:moved?Theme.Accent:Theme.Ink,muted=sel?Theme.AccentInk:Theme.Muted;
+     TextRenderer.DrawText(g,Symbols[m]+" "+Names[m],small,new Rectangle((int)(r.X+size*0.1f),(int)(r.Y+r.Height*0.08f),(int)(r.Width-size*0.15f),(int)(r.Height*0.35f)),muted,TextFormatFlags.Left|TextFormatFlags.NoPadding|TextFormatFlags.EndEllipsis);
+     TextRenderer.DrawText(g,label(m),big,new Rectangle((int)r.X,(int)(r.Y+r.Height*0.38f),(int)r.Width,(int)(r.Height*0.55f)),ink,TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter|TextFormatFlags.NoPadding);
     }
    }
   }

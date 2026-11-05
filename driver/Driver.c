@@ -197,22 +197,38 @@ static void DeleteControl(void)
 	UNICODE_STRING link = RTL_CONSTANT_STRING(L"\\DosDevices\\MagicKeyboardFn");
 	if (!g_Control)
 		return;
+	// Handles still open on this object get STATUS_DEVICE_REMOVED from now on, so
+	// clients reopen the next control object instead of reading through a dead one.
+	((PDEVICE_EXTENSION)g_Control->DeviceExtension)->Deleted = TRUE;
+	g_Reader = NULL;
 	FailPendingReads(NULL, STATUS_DEVICE_NOT_CONNECTED);
 	IoDeleteSymbolicLink(&link);
 	IoDeleteDevice(g_Control);
 	g_Control = NULL;
 }
 
+// Only the session at the physical console may use the control device: it carries
+// function-row presses and sets the machine-wide mapping, so a user in another
+// (switched-away or remote) session must not read or change them.
+static BOOLEAN FromConsole(PIRP irp)
+{
+	ULONG session;
+	return NT_SUCCESS(IoGetRequestorSessionId(irp, &session)) && session == SharedUserData->ActiveConsoleId;
+}
+
 NTSTATUS DispatchControl(IN PDEVICE_OBJECT control, IN PIRP irp)
 {
-	UNREFERENCED_PARAMETER(control);
 	PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(irp);
 	KIRQL irql;
+
+	if (((PDEVICE_EXTENSION)control->DeviceExtension)->Deleted &&
+		stack->MajorFunction != IRP_MJ_CLEANUP && stack->MajorFunction != IRP_MJ_CLOSE)
+		return CompleteRequest(irp, STATUS_DEVICE_REMOVED, 0);
 
 	switch (stack->MajorFunction)
 	{
 	case IRP_MJ_CREATE:
-		return CompleteRequest(irp, STATUS_SUCCESS, 0);
+		return CompleteRequest(irp, FromConsole(irp) ? STATUS_SUCCESS : STATUS_ACCESS_DENIED, 0);
 
 	case IRP_MJ_CLOSE:
 		return CompleteRequest(irp, STATUS_SUCCESS, 0);
@@ -233,23 +249,28 @@ NTSTATUS DispatchControl(IN PDEVICE_OBJECT control, IN PIRP irp)
 		case IOCTL_MAGICKB_SET_CONFIG:
 			if (stack->Parameters.DeviceIoControl.InputBufferLength != sizeof(MAGICKB_CONFIG))
 				return CompleteRequest(irp, STATUS_INVALID_BUFFER_SIZE, 0);
+			if (!FromConsole(irp))
+				return CompleteRequest(irp, STATUS_ACCESS_DENIED, 0);
 			return CompleteRequest(irp, EngineSetConfig((const MAGICKB_CONFIG*)irp->AssociatedIrp.SystemBuffer), 0);
 		case IOCTL_MAGICKB_READ_EVENT:
-			if (g_Reader != stack->FileObject)
+			if (stack->Parameters.DeviceIoControl.OutputBufferLength < sizeof(MAGICKB_EVENT))
+				return CompleteRequest(irp, STATUS_BUFFER_TOO_SMALL, 0);
+			if (!FromConsole(irp))
+				return CompleteRequest(irp, STATUS_ACCESS_DENIED, 0);
+			// One reader at a time; it keeps the channel until it closes its handle.
+			// A new reader starts from the next event, not from stale history.
+			if (InterlockedCompareExchangePointer((PVOID volatile*)&g_Reader, stack->FileObject, NULL) == NULL)
 			{
-				// A new reader starts from the next event, not from stale history.
-				// Opening a handle only to read or change the configuration keeps the ring.
 				KeAcquireSpinLock(&g_RingLock, &irql);
 				g_Head = g_Count = 0;
 				KeReleaseSpinLock(&g_RingLock, irql);
-				g_Reader = stack->FileObject;
 			}
+			else if (g_Reader != stack->FileObject)
+				return CompleteRequest(irp, STATUS_SHARING_VIOLATION, 0);
 			break;
 		default:
 			return CompleteRequest(irp, STATUS_INVALID_DEVICE_REQUEST, 0);
 		}
-		if (stack->Parameters.DeviceIoControl.OutputBufferLength < sizeof(MAGICKB_EVENT))
-			return CompleteRequest(irp, STATUS_BUFFER_TOO_SMALL, 0);
 		{
 			MAGICKB_EVENT report;
 			BOOLEAN ready;
@@ -492,12 +513,12 @@ NTSTATUS DispatchPnp(IN PDEVICE_OBJECT fido, IN PIRP irp)
 	}
 
 	if (fcn == IRP_MN_SURPRISE_REMOVAL)
-		EngineStop();
+		EngineStop(pdx->Vhf);
 
 	//Handle remove device specially in order to cleanup device stack
 	if (fcn == IRP_MN_REMOVE_DEVICE)
 	{
-		EngineStop();
+		EngineStop(pdx->Vhf);
 		if (pdx->Vhf)
 		{
 			VhfDelete(pdx->Vhf, TRUE);
@@ -579,7 +600,36 @@ NTSTATUS InternalIoctlComplete(PDEVICE_OBJECT device, PIRP irp, PVOID context)
             if (!report && transfer->TransferBufferMDL)
                 report = MmGetSystemAddressForMdlSafe(transfer->TransferBufferMDL, NormalPagePriority | MdlMappingNoExecute);
             if (report && report[0] == 1)
-                EngineProcessReport(report);
+                EngineProcessReport(report, extension->Vhf);
+        }
+    }
+
+    if (irp->PendingReturned)
+        IoMarkIrpPending(irp);
+    IoReleaseRemoveLock(&extension->RemoveLock, irp);
+    return STATUS_CONTINUE_COMPLETION;
+}
+
+/* Bluetooth: HidBth reads the HID interrupt channel with L2CAP ACL transfers. An input
+   report arrives as a HID DATA|INPUT header (0xA1) followed by the same 10-byte report
+   (ID 1) the keyboard sends over USB, so the same engine rewrites it in place. */
+NTSTATUS BthComplete(PDEVICE_OBJECT device, PIRP irp, PVOID context)
+{
+    UNREFERENCED_PARAMETER(device);
+    PDEVICE_EXTENSION extension = (PDEVICE_EXTENSION)context;
+    PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(irp);
+    struct _BRB_L2CA_ACL_TRANSFER* transfer = (struct _BRB_L2CA_ACL_TRANSFER*)stack->Parameters.Others.Argument1;
+
+    if (NT_SUCCESS(irp->IoStatus.Status) && transfer && NT_SUCCESS(transfer->Hdr.Status))
+    {
+        // BufferSize now holds the bytes received (bthddi.h).
+        if (transfer->BufferSize == MAGICKB_REPORT_LENGTH + 1)
+        {
+            UCHAR* data = (UCHAR*)transfer->Buffer;
+            if (!data && transfer->BufferMDL)
+                data = MmGetSystemAddressForMdlSafe(transfer->BufferMDL, NormalPagePriority | MdlMappingNoExecute);
+            if (data && data[0] == 0xA1 && data[1] == 1)
+                EngineProcessReport(data + 1, extension->Vhf);
         }
     }
 
@@ -604,6 +654,17 @@ NTSTATUS DispatchInternalIoctl(PDEVICE_OBJECT device, PIRP irp)
         IoCopyCurrentIrpStackLocationToNext(irp);
         IoSetCompletionRoutine(irp, InternalIoctlComplete, extension, TRUE, TRUE, TRUE);
         return IoCallDriver(extension->LowerDeviceObject, irp);
+    }
+    if (stack->Parameters.DeviceIoControl.IoControlCode == IOCTL_INTERNAL_BTH_SUBMIT_BRB)
+    {
+        struct _BRB_HEADER* brb = (struct _BRB_HEADER*)stack->Parameters.Others.Argument1;
+        if (brb && brb->Type == BRB_L2CA_ACL_TRANSFER &&
+            (((struct _BRB_L2CA_ACL_TRANSFER*)brb)->TransferFlags & ACL_TRANSFER_DIRECTION_IN))
+        {
+            IoCopyCurrentIrpStackLocationToNext(irp);
+            IoSetCompletionRoutine(irp, BthComplete, extension, TRUE, TRUE, TRUE);
+            return IoCallDriver(extension->LowerDeviceObject, irp);
+        }
     }
 
     IoSkipCurrentIrpStackLocation(irp);

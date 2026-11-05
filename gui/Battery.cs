@@ -32,6 +32,21 @@ namespace MagicKeyboard {
   [DllImport("hid.dll")] static extern int HidP_GetUsages(int type,ushort page,ushort link,ushort[] usages,ref int length,IntPtr data,byte[] report,int length2);
   [StructLayout(LayoutKind.Sequential)] struct InterfaceData {public int Size;public Guid Class;public int Flags;public IntPtr Reserved;}
 
+  // How the keyboard is connected: "usb", "bluetooth", or null when it isn't. USB wins
+  // when both are up (the keyboard types over the cable then). Matches the USB-C Magic
+  // Keyboard family: 0320, 0321 (Touch ID), 0322 (numeric keypad).
+  public static string Link(){
+   bool bluetooth=false;
+   foreach(string path in ApplePaths()){
+    string lower=path.ToLowerInvariant();
+    foreach(string pid in new[]{"0320","0321","0322"}){
+     if(lower.Contains("vid_05ac&pid_"+pid))return "usb";
+     if(lower.Contains("004c_pid&"+pid))bluetooth=true;
+    }
+   }
+   return bluetooth?"bluetooth":null;
+  }
+
   // HID collection paths of Apple devices: USB vendor 05AC, Bluetooth vendor 004C.
   static IEnumerable<string> ApplePaths(){
    foreach(string path in InterfacePaths(HidClass)){

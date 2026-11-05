@@ -8,7 +8,7 @@ Class       = HIDClass
 ClassGuid   = {745a17a0-74d3-11d0-b6fe-00a0c90f57da}
 Provider    = %Provider%
 CatalogFile = MagicKeyboardFn.cat
-DriverVer   = 11/05/2026,1.0.7.0
+DriverVer   = 11/05/2026,1.0.8.0
 PnpLockdown = 1
 
 [DestinationDirs]
@@ -27,6 +27,7 @@ MagicKeyboardControls.exe = 1
 [MagicKb_Models.NTamd64]
 %DeviceDesc% = MagicKb_Inst, USB\VID_05AC&PID_0320&MI_01
 %AuxDesc%    = MagicKb_Aux, USB\VID_05AC&PID_0320&MI_00
+%BtDesc%     = MagicKb_Bt, BTHENUM\{00001124-0000-1000-8000-00805f9b34fb}_VID&0001004c_PID&0320
 
 [MagicKb_Inst.NT]
 Include   = input.inf
@@ -67,6 +68,24 @@ HKR,,"DeviceInterfaceGUIDs",0x00010000,"{8C4D7C2A-4B6E-4F7B-9E3A-6A1F0D5B2E91}"
 Include = winusb.inf
 Needs   = WINUSB.NT.Services
 
+; Bluetooth: the in-box HidBth driver, with VHF and MagicKeyboardFn below it. The keyboard
+; sends the same input report over Bluetooth, so the same filter maps it.
+[MagicKb_Bt.NT]
+Include   = hidbth.inf
+Needs     = HIDBTH_Inst.NT
+CopyFiles = MagicKb_Files
+AddReg    = MagicKb_Tray
+
+[MagicKb_Bt.NT.HW]
+Include = hidbth.inf
+Needs   = HIDBTH_Inst.NT.HW
+AddReg  = MagicKb_Filters
+
+[MagicKb_Bt.NT.Services]
+Include    = hidbth.inf
+Needs      = HIDBTH_Inst.NT.Services
+AddService = MagicKeyboardFn,,MagicKb_Service
+
 [MagicKb_Inst.NT.Services]
 Include    = input.inf
 Needs      = HID_Inst.NT.Services
@@ -82,7 +101,8 @@ ServiceBinary = %13%\MagicKeyboardFn.sys
 [Strings]
 Provider     = "Orchard Keys"
 Manufacturer = "Apple Inc."
-DeviceDesc   = "Magic Keyboard (USB-C) - Orchard Keys"
-AuxDesc      = "Magic Keyboard (USB-C) battery - Orchard Keys"
+DeviceDesc   = "Orchard Keys Magic Keyboard (USB-C)"
+AuxDesc      = "Orchard Keys Magic Keyboard Battery (USB-C)"
+BtDesc       = "Orchard Keys Magic Keyboard (Bluetooth)"
 ServiceDesc  = "Orchard Keys Fn mapping filter"
 DiskName     = "Orchard Keys driver disk"

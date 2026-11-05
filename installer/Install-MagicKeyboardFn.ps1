@@ -44,7 +44,11 @@ if($Remove){
     Remove-ItemProperty -LiteralPath $runKey -Name MagicKeyboardControls -ErrorAction SilentlyContinue
     Get-Process MagicKeyboardControls -ErrorAction SilentlyContinue | Stop-Process -Force
     Remove-Item -LiteralPath $appDir -Recurse -Force -ErrorAction SilentlyContinue
+    # Stop trusting the test certificate the install added.
+    $thumb=(New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $cer).Thumbprint
+    foreach($store in 'Root','TrustedPublisher'){Remove-Item -LiteralPath "Cert:\LocalMachine\$store\$thumb" -ErrorAction SilentlyContinue}
     & pnputil.exe /scan-devices | Out-Null
+    if(bcdedit /enum '{current}' | Select-String '^testsigning\s+Yes'){'Windows test signing is still on. To turn it off: bcdedit /set testsigning off, then restart.'}
     'Removed. The keyboard is back on the Windows HID driver (a restart may be needed).'
     return
 }
@@ -80,6 +84,13 @@ if($connected){
     if(Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object InstanceId -like "$aux\*"){
         try{if([MagicKbSetup]::Force($aux,$inf)){$reboot=$true}}catch{"Battery interface not updated: $_"}
     }
+}
+# The same keyboard paired over Bluetooth.
+$bluetoothId='BTHENUM\{00001124-0000-1000-8000-00805f9b34fb}_VID&0001004c_PID&0320'
+$paired=Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object InstanceId -like 'BTHENUM\{00001124-0000-1000-8000-00805F9B34FB}_VID&0001004C_PID&0320\*'
+if($paired){
+    try{if([MagicKbSetup]::Force($bluetoothId,$inf)){$reboot=$true}}catch{"Bluetooth connection not updated: $_"}
+    $connected=$true
 }
 # A copy left by the earlier manual install is no longer used.
 Remove-Item -LiteralPath (Join-Path $env:windir 'System32\drivers\MagicKeyboardFn.sys') -ErrorAction SilentlyContinue

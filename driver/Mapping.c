@@ -262,10 +262,23 @@ static void ActionUp(const MAGICKB_ACTION* a)
 	switch (a->Type)
 	{
 	case MAGICKB_ACTION_KEY:
-		g_KeyMods &= ~a->Modifiers;
-		for (int i = 0; i < 6; ++i)
-			if (g_Keys[i] == a->Usage)
-				g_Keys[i] = 0;
+		// Rebuild from the KEY actions still held, so releasing one key never releases
+		// a modifier or usage another held key also uses.
+		g_KeyMods = 0;
+		RtlZeroMemory(g_Keys, sizeof(g_Keys));
+		for (int i = 0; i < 12; ++i)
+		{
+			const MAGICKB_ACTION* held = &g_Held[i];
+			if (held == a || !(g_ActionRow & (1 << i)) || held->Type != MAGICKB_ACTION_KEY)
+				continue;
+			g_KeyMods |= held->Modifiers;
+			for (int k = 0; held->Usage && k < 6; ++k)
+				if (!g_Keys[k] || g_Keys[k] == held->Usage)
+				{
+					g_Keys[k] = (UCHAR)held->Usage;
+					break;
+				}
+		}
 		SubmitKeyboard(0, 0);
 		break;
 	case MAGICKB_ACTION_CONSUMER:
@@ -348,6 +361,8 @@ static void UpdateGesture(int g, BOOLEAN active, BOOLEAN chord, ULONG now)
 		s->Waiting = s->Second = FALSE;
 		RunGestureAction(g, 1);
 	}
+	else if (!hasLong && now - s->Pressed >= longMs)
+		return; // held too long to count as a tap
 	else if (hasDouble)
 	{
 		s->Waiting = TRUE;
@@ -436,25 +451,41 @@ NTSTATUS EngineCreateVhf(PDEVICE_OBJECT fido, VHFHANDLE* vhf)
 	return status;
 }
 
+// The engine drives one keyboard at a time: the one (USB or Bluetooth) whose report came
+// last. Starting a keyboard only claims the engine when no other keyboard holds it.
 void EngineStart(VHFHANDLE vhf)
 {
 	KIRQL irql;
 	KeAcquireSpinLock(&g_EngineLock, &irql);
-	g_Vhf = vhf;
-	g_PrevRow = 0;
-	ResetState();
+	if (vhf && g_Vhf != vhf)
+	{
+		// Another keyboard (or none) held the engine: release what it held, then switch.
+		ResetState();
+		g_Vhf = vhf;
+		g_PrevRow = 0;
+	}
+	if (!g_Vhf)
+	{
+		g_Vhf = vhf;
+		g_PrevRow = 0;
+		ResetState();
+	}
 	KeReleaseSpinLock(&g_EngineLock, irql);
 }
 
-// Must be called at PASSIVE_LEVEL; after it returns no timer DPC uses the VHF handle.
-void EngineStop(void)
+// Must be called at PASSIVE_LEVEL; after it returns no timer DPC uses this VHF handle.
+// Stopping a keyboard that doesn't hold the engine leaves the other one running.
+void EngineStop(VHFHANDLE vhf)
 {
 	KIRQL irql;
 	KeAcquireSpinLock(&g_EngineLock, &irql);
-	ResetState();
-	g_Vhf = NULL;
-	KeCancelTimer(&g_Timer);
-	g_TimerRunning = FALSE;
+	if (vhf && g_Vhf == vhf)
+	{
+		ResetState();
+		g_Vhf = NULL;
+		KeCancelTimer(&g_Timer);
+		g_TimerRunning = FALSE;
+	}
 	KeReleaseSpinLock(&g_EngineLock, irql);
 	KeFlushQueuedDpcs();
 }
@@ -471,19 +502,30 @@ NTSTATUS EngineSetConfig(const MAGICKB_CONFIG* config)
 {
 	if (!ValidConfig(config))
 		return STATUS_INVALID_PARAMETER;
+	// Persist first, so the active profile is always the saved one.
+	NTSTATUS status = SaveConfig(config);
+	if (!NT_SUCCESS(status))
+		return status;
 	KIRQL irql;
 	KeAcquireSpinLock(&g_EngineLock, &irql);
 	ResetState();
 	g_Config = *config;
 	KeReleaseSpinLock(&g_EngineLock, irql);
-	return SaveConfig(config);
+	return STATUS_SUCCESS;
 }
 
-// Called for every keyboard input report (ID 1) from the device, in place.
-void EngineProcessReport(UCHAR* report)
+// Called for every keyboard input report (ID 1) from a keyboard, USB or Bluetooth, in
+// place. vhf is that keyboard's virtual device.
+void EngineProcessReport(UCHAR* report, VHFHANDLE vhf)
 {
+	// The tray app gets only what the function-row display needs: modifiers, F1-F12, Fn
+	// and Lock. Every other key is removed, so the event channel never carries typing.
 	UCHAR raw[MAGICKB_REPORT_LENGTH];
 	RtlCopyMemory(raw, report, sizeof(raw));
+	for (int i = 3; i < 9; ++i)
+		if (raw[i] < 0x3A || raw[i] > 0x45)
+			raw[i] = 0;
+	raw[9] &= 0x0A; // Fn and Lock only
 	// Remap Control / Option / Command first, so Windows and the action layer both see
 	// the remapped modifiers.
 	KIRQL irql;
@@ -510,6 +552,13 @@ void EngineProcessReport(UCHAR* report)
 	}
 
 	KeAcquireSpinLock(&g_EngineLock, &irql);
+	if (vhf && g_Vhf != vhf)
+	{
+		// Another keyboard (or none) held the engine: release what it held, then switch.
+		ResetState();
+		g_Vhf = vhf;
+		g_PrevRow = 0;
+	}
 	if (!g_Vhf)
 	{
 		// No virtual device to carry actions: leave the report untouched.

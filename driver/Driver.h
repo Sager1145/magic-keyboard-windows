@@ -1,12 +1,15 @@
 #pragma once
 
-#include <ntddk.h>
+#include <ntifs.h> // IoGetRequestorSessionId; includes ntddk.h
 #include <wdm.h>
 #include <initguid.h>
 #include <wdmsec.h>
 #include <vhf.h>
 #include "usbioctl.h"
 #include "usbdi.h"
+#include <bthdef.h>
+#include <bthioctl.h>
+#include <bthddi.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -14,7 +17,7 @@ extern "C" {
 
 	#define DRIVERNAME "MagicKeyboardFn"
 
-	#if defined(DBG)
+	#if DBG
 		#define DebugPrint(s, ...) DbgPrint(DRIVERNAME ": " s "\n", __VA_ARGS__);
 	#else
 		#define DebugPrint
@@ -92,6 +95,7 @@ extern "C" {
 	typedef struct tagDEVICE_EXTENSION
 	{
 		BOOLEAN IsControl; // TRUE only for \Device\MagicKeyboardFn
+		BOOLEAN Deleted; // control object removed; open handles get STATUS_DEVICE_REMOVED
 		PDEVICE_OBJECT DeviceObject; // device object this extension belongs to
 		PDEVICE_OBJECT LowerDeviceObject; // next lower driver in same stack
 		PDEVICE_OBJECT Pdo; // the PDO
@@ -115,8 +119,8 @@ extern "C" {
 	// Mapping engine (Mapping.c)
 	void EngineInitialize(PDRIVER_OBJECT driverObject);
 	void EngineStart(VHFHANDLE vhf);
-	void EngineStop(void);
-	void EngineProcessReport(UCHAR* report);
+	void EngineStop(VHFHANDLE vhf);
+	void EngineProcessReport(UCHAR* report, VHFHANDLE vhf);
 	void EngineGetConfig(MAGICKB_CONFIG* config);
 	NTSTATUS EngineSetConfig(const MAGICKB_CONFIG* config);
 	NTSTATUS EngineCreateVhf(PDEVICE_OBJECT fido, VHFHANDLE* vhf);

@@ -16,8 +16,7 @@ namespace MagicKeyboard {
   public static readonly string StatusFile=Path.Combine(Configuration.Folder,"agent-status.txt");
   Configuration saved;ActionRunner runner;NotifyIcon tray;DriverCapture capture;
   readonly bool observe;bool started;
-  string driverText="Starting",actionText="",inputText="No function-key input yet";
-  int liveHeld,liveKey=-1,liveSeq;bool liveFn;
+  string driverText="Starting";
   BatteryReading battery;bool lowWarned;System.Threading.Timer batteryPoll;int polling;
   IntPtr usbNotifications;
   [StructLayout(LayoutKind.Sequential)] struct DeviceFilter {
@@ -29,6 +28,20 @@ namespace MagicKeyboard {
   static extern IntPtr RegisterDeviceNotification(IntPtr window,ref DeviceFilter filter,int flags);
   [DllImport("user32.dll")]
   static extern bool UnregisterDeviceNotification(IntPtr registration);
+  [DllImport("wtsapi32.dll")] static extern bool WTSRegisterSessionNotification(IntPtr window,int flags);
+  [DllImport("wtsapi32.dll")] static extern bool WTSUnRegisterSessionNotification(IntPtr window);
+  [DllImport("kernel32.dll")] static extern int WTSGetActiveConsoleSessionId();
+  IntPtr hidNotifications;
+  // The driver serves only the session at the physical console; with several users signed
+  // in, the agent of the session in front of the keyboard holds the driver.
+  static bool AtConsole(){return WTSGetActiveConsoleSessionId()==Process.GetCurrentProcess().SessionId;}
+  // An elevated agent would run commands from a settings file any normal process can edit.
+  // (With UAC off every process is elevated, so there is no lower level to protect.)
+  public static bool Elevated(){
+   object lua=Microsoft.Win32.Registry.GetValue(@"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System","EnableLUA",1);
+   if(lua is int && (int)lua==0)return false;
+   using(var id=System.Security.Principal.WindowsIdentity.GetCurrent())return new System.Security.Principal.WindowsPrincipal(id).IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+  }
   PhysicalKeys physical;
   readonly System.Windows.Forms.Timer retry=new System.Windows.Forms.Timer{Interval=2000};
   readonly System.Windows.Forms.Timer reload=new System.Windows.Forms.Timer{Interval=300};
@@ -46,13 +59,16 @@ namespace MagicKeyboard {
   static Configuration LoadProfile(){try{return Configuration.Load();}catch(Exception){return Configuration.Create();}}
   void Start(){
    saved=LoadProfile();
-   runner=new ActionRunner(text=>Post(()=>{actionText=text;WriteStatus();}));
+   runner=new ActionRunner(text=>{}); // results are not recorded
    var filter=new DeviceFilter{
     Size=Marshal.SizeOf(typeof(DeviceFilter)),Type=5,
     Class=new Guid("A5DCBF10-6530-11D2-901F-00C04FB951ED")
    };
    usbNotifications=RegisterDeviceNotification(Handle,ref filter,0);
-   retry.Tick+=(s,e)=>{if(capture==null)Connect();};retry.Start();
+   filter.Class=new Guid("4D1E55B2-F16F-11CF-88CB-001111000030"); // HID: the Bluetooth connection
+   hidNotifications=RegisterDeviceNotification(Handle,ref filter,0);
+   WTSRegisterSessionNotification(Handle,0);
+   retry.Tick+=(s,e)=>{if(capture==null && AtConsole())Connect();};retry.Start();
    // Battery: a Bluetooth battery device reports its level at connect and notifies on each
    // change. This keyboard only answers when asked, so read it at connect and on wake, then
    // check often enough to catch each 1% step: every minute while charging (about 1% a
@@ -82,8 +98,8 @@ namespace MagicKeyboard {
   static void OpenSettings(){Process.Start(Application.ExecutablePath);}
   void Post(Action action){if(IsDisposed)return;try{BeginInvoke(action);}catch(InvalidOperationException){}}
   void Reload(){
-   try{saved=Configuration.Load();actionText="Profile reloaded";Push();}
-   catch(Exception e){actionText="Profile not reloaded · "+e.Message;WriteStatus();}
+   try{saved=Configuration.Load();Push();}
+   catch(Exception e){driverText="Profile not reloaded · "+e.Message;WriteStatus();}
   }
   void Push(){
    try{
@@ -92,12 +108,10 @@ namespace MagicKeyboard {
    }catch(Exception e){driverText="Driver unavailable · "+e.Message;}
    WriteStatus();
   }
+  // The status file holds driver state and the battery (percent;charging), never keys or actions.
   void WriteStatus(){
-   // Line 4 feeds the settings window's live display: held keys;last key;Fn held;press count.
-   // Line 5 is the battery: percent;charging (empty when unknown).
-   string live=liveHeld+";"+liveKey+";"+(liveFn?1:0)+";"+liveSeq;
    string level=battery.Valid?battery.Percent+";"+(battery.Charging?1:0):"";
-   try{File.WriteAllText(StatusFile,driverText+"\n"+actionText+"\n"+inputText+"\n"+live+"\n"+level);}catch(IOException){}catch(UnauthorizedAccessException){}
+   try{File.WriteAllText(StatusFile,driverText+"\n"+level);}catch(IOException){}catch(UnauthorizedAccessException){}
   }
   // Runs on a pool thread: HID GET_REPORT is a blocking USB / Bluetooth round trip.
   void PollBattery(){
@@ -123,48 +137,60 @@ namespace MagicKeyboard {
    if(r.Valid && (r.Charging || r.Percent>15))lowWarned=false;
    if(changed)WriteStatus();
   }
+  void Disconnect(string why){
+   if(capture!=null){capture.Dispose();capture=null;}
+   driverText=why;WriteStatus();
+  }
   void Connect(){
    if(capture!=null){capture.Dispose();capture=null;}
+   if(!AtConsole()){driverText="Waiting · another user is at the keyboard";WriteStatus();return;}
    physical=new PhysicalKeys();
    DriverCapture source=null;
    try{
     source=new DriverCapture(
      keys=>Post(()=>{if(capture==source)OnPhysical(keys);}),
      (key,gesture)=>Post(()=>{if(capture==source)OnApp(key,gesture);}),
-     text=>Post(()=>{if(capture!=source)return;capture.Dispose();capture=null;inputText=text;WriteStatus();}));
+     text=>Post(()=>{if(capture!=source)return;capture.Dispose();capture=null;driverText=text;WriteStatus();}));
    }catch(System.ComponentModel.Win32Exception e){driverText="Driver unavailable · "+e.Message;WriteStatus();return;}
    capture=source;
    Push();
   }
   void OnApp(int key,int gesture){
    Binding binding=saved.GetBinding(key,gesture);
-   if(observe){actionText="App action (observe only): "+Actions.Name(binding);WriteStatus();return;}
+   if(observe)return;
    runner.Execute(key,binding);
   }
-  // Reports presses that involve Fn, F1-F12 or Lock (with whatever else is held) for the
-  // settings window. Plain typing is never recorded.
+  // Passes presses that involve Fn, F1-F12 or Lock to the settings window while it is open,
+  // as a window message. Nothing is stored, and plain typing is never passed on.
+  int lastKey=-1;
   void OnPhysical(PhysicalKeys keys){
    PhysicalKeys was=physical;physical=keys;
+   if(keys.Held==0 && was.Held==0)return;
    int fresh=keys.Held & ~was.Held;
-   bool changed=keys.Held!=0 && (fresh!=0 || keys.Mods!=was.Mods || keys.Extra!=was.Extra);
-   liveHeld=keys.Held;
-   if(!changed){if(keys.Held!=was.Held)WriteStatus();return;} // a release: only the highlight changes
    if(fresh!=0){
     int row=fresh&0xFFF;
-    if(row!=0){liveKey=0;while((row&(1<<liveKey))==0)liveKey++;}
-    else liveKey=(fresh&(1<<12))!=0?12:13;
+    if(row!=0){lastKey=0;while((row&(1<<lastKey))==0)lastKey++;}
+    else lastKey=(fresh&(1<<12))!=0?12:13;
    }
-   liveFn=keys.Fn;liveSeq++;
-   string pressed=keys.Describe();
-   inputText="Fn driver · "+pressed;
-   WriteStatus();
-   if(observe)File.AppendAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"physical-verification.log"),pressed+Environment.NewLine);
+   if(keys.Held==0)lastKey=-1;
+   IntPtr window=LiveKeys.Window();
+   if(window!=IntPtr.Zero)LiveKeys.Send(window,keys,lastKey);
+  }
+  // The keyboard arriving over USB (vendor 05AC) or Bluetooth (vendor 004C).
+  static bool IsKeyboard(string device){
+   if(device==null)return false;
+   string d=device.ToUpperInvariant();
+   return (d.Contains("VID_05AC&PID_0320") || d.Contains("004C_PID&0320"));
   }
   protected override void WndProc(ref Message message){
    if(message.Msg==0x219 && message.LParam!=IntPtr.Zero &&
       message.WParam.ToInt32()==0x8000 && Marshal.ReadInt32(message.LParam,4)==5){
-    string device=Marshal.PtrToStringUni(IntPtr.Add(message.LParam,28));
-    if(device!=null && device.IndexOf("VID_05AC&PID_0320",StringComparison.OrdinalIgnoreCase)>=0){Connect();ReadBatterySoon(3000);}
+    if(IsKeyboard(Marshal.PtrToStringUni(IntPtr.Add(message.LParam,28)))){Connect();ReadBatterySoon(3000);}
+   }
+   if(message.Msg==0x2B1){ // WM_WTSSESSION_CHANGE
+    int change=message.WParam.ToInt32();
+    if(change==2)Disconnect("Waiting · another user is at the keyboard"); // WTS_CONSOLE_DISCONNECT
+    else if(change==1){Connect();ReadBatterySoon(3000);} // WTS_CONSOLE_CONNECT
    }
    base.WndProc(ref message);
   }
@@ -174,10 +200,12 @@ namespace MagicKeyboard {
     Microsoft.Win32.SystemEvents.PowerModeChanged-=OnPowerMode;
     if(batteryPoll!=null)batteryPoll.Dispose();
     if(usbNotifications!=IntPtr.Zero){UnregisterDeviceNotification(usbNotifications);usbNotifications=IntPtr.Zero;}
+    if(hidNotifications!=IntPtr.Zero){UnregisterDeviceNotification(hidNotifications);hidNotifications=IntPtr.Zero;}
+    if(IsHandleCreated)WTSUnRegisterSessionNotification(Handle);
     if(capture!=null){capture.Dispose();capture=null;}
     retry.Dispose();reload.Dispose();
     if(tray!=null){tray.Visible=false;tray.Dispose();}
-    actionText="Tray closed · app-only actions paused, driver mappings active";WriteStatus();
+    driverText="Tray closed · app-only actions paused, driver mappings active";WriteStatus();
    }
    base.Dispose(disposing);
   }
@@ -190,7 +218,7 @@ namespace MagicKeyboard {
    }
   }
   public static void EnsureRunning(){
-   if(!Running())Process.Start(new ProcessStartInfo(Application.ExecutablePath,"--agent"){UseShellExecute=false});
+   if(!Running() && !Elevated())Process.Start(new ProcessStartInfo(Application.ExecutablePath,"--agent"){UseShellExecute=false});
   }
  }
 }

@@ -39,6 +39,7 @@ namespace MagicKeyboard {
   public bool Fn, Lock, Other;
   public byte Mods; // HID modifier byte: Ctrl, Shift, Alt, Win (left bits 0-3, right bits 4-7)
   public string Extra; // other held keys, named, e.g. "A + Space"
+  public byte[] Usages; // other held keys (HID keyboard usages)
   // Function keys held: F1-F12 bits 0-11, Lock bit 12, Fn bit 13.
   public int Held{get{return Row|(Lock?1<<12:0)|(Fn?1<<13:0);}}
   // "Ctrl + Fn + F4", in the order modifiers, Fn, other keys, F1-F12, Lock.
@@ -52,6 +53,7 @@ namespace MagicKeyboard {
    if(Lock)parts.Add("Lock");
    return String.Join(" + ",parts);
   }
+  public static string Names(byte[] usages){var n=new System.Collections.Generic.List<string>();foreach(byte u in usages)n.Add(UsageName(u));return String.Join(" + ",n);}
   static string UsageName(int u){
    if(u>=0x04 && u<=0x1D)return ((char)('A'+u-0x04)).ToString();
    if(u>=0x1E && u<=0x26)return ((char)('1'+u-0x1E)).ToString();
@@ -75,13 +77,13 @@ namespace MagicKeyboard {
    if(start<0 || start+10>packet.Length || packet[start]!=1)return false;
    keys.Mods=packet[start+1];
    keys.Other=packet[start+1]!=0 || (packet[start+9]&5)!=0;
-   var extra=new System.Collections.Generic.List<string>();
+   var extra=new System.Collections.Generic.List<byte>();
    for(int i=3;i<9;i++){
     int usage=packet[start+i];
     if(usage>=0x3A && usage<=0x45)keys.Row|=1<<(usage-0x3A);
-    else if(usage!=0){keys.Other=true;extra.Add(UsageName(usage));}
+    else if(usage!=0){keys.Other=true;extra.Add((byte)usage);}
    }
-   keys.Extra=String.Join(" + ",extra);
+   keys.Usages=extra.ToArray();keys.Extra=Names(keys.Usages);
    keys.Fn=(packet[start+9]&2)!=0;
    keys.Lock=(packet[start+9]&8)!=0;
    return true;

@@ -155,19 +155,16 @@ namespace MagicKeyboard {
   public static void ToggleVoiceTyping(){
    IntPtr panel=OpenInputPanel();
    if(panel==IntPtr.Zero){Chord("Win+H");return;}
-   var seen=new StringBuilder();
    try{
     var buttons=AutomationElement.FromHandle(panel).FindAll(TreeScope.Descendants,new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.Button));
     foreach(AutomationElement button in buttons){
-     string id=button.Current.AutomationId,name=button.Current.Name;
-     seen.AppendLine(id+" | "+name);
+     string id=button.Current.AutomationId;
      if(id.IndexOf("Close",StringComparison.OrdinalIgnoreCase)<0 && id.IndexOf("Dismiss",StringComparison.OrdinalIgnoreCase)<0)continue;
      object invoke;
      if(button.TryGetCurrentPattern(InvokePattern.Pattern,out invoke)){((InvokePattern)invoke).Invoke();return;}
     }
    }catch(ElementNotAvailableException){}
-   // No close button found: record what the panel offers (for diagnosis) and dismiss with Escape.
-   try{File.WriteAllText(Path.Combine(Configuration.Folder,"voice-typing-ui.txt"),seen.ToString());}catch(IOException){}
+   // No close button found: dismiss with Escape.
    SetForegroundWindow(panel);
    Tap(0x1B);
   }
@@ -218,7 +215,7 @@ namespace MagicKeyboard {
    case "brightness-up":Brightness(5);return;
    case "input-method":Input.Chord("Win+Space");return;
    case "clipboard-history":Input.Chord("Win+V");return;
-   case "emoji":Input.Chord("Win+;");return;
+   case "emoji":Input.Chord("Win+OemPeriod");return;
       case "sleep":PowerActions.Sleep(PowerState.Suspend);return;
    case "power":PowerActions.PowerButton();return;
    case "key":Input.Tap(Shortcut.SingleKey(b.Value));return;
@@ -238,7 +235,10 @@ namespace MagicKeyboard {
    string encoded=Convert.ToBase64String(Encoding.Unicode.GetBytes(command));
    ProcessStartInfo info=new ProcessStartInfo("powershell.exe","-NoLogo -NoProfile -NonInteractive -EncodedCommand "+encoded){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};
    using(Process p=Process.Start(info)){
-    Task<string> output=p.StandardOutput.ReadToEndAsync(),error=p.StandardError.ReadToEndAsync();p.WaitForExit();Task.WaitAll(output,error);
+    Task<string> output=p.StandardOutput.ReadToEndAsync(),error=p.StandardError.ReadToEndAsync();
+    // A command that hangs would block its key forever: give it 2 minutes.
+    if(!p.WaitForExit(120000)){try{p.Kill();}catch(InvalidOperationException){}throw new TimeoutException("PowerShell command timed out after 2 minutes.");}
+    Task.WaitAll(output,error);
     if(p.ExitCode!=0)throw new InvalidOperationException("PowerShell exited "+p.ExitCode+": "+error.Result.Substring(0,Math.Min(500,error.Result.Length)));
    }
   }
