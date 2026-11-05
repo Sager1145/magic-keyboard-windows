@@ -33,3 +33,4 @@ xar-toc.xml
 *.pfx
 *.pvk
 *.snk
+/release/

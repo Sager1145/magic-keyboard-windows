@@ -1,13 +1,13 @@
-param([string]$Version='1.0.0')
+param([string]$Version='1.0.0',[string]$Output='dist')
 $ErrorActionPreference='Stop'
-# Builds the release assets into dist\:
+# Builds the release assets into dist\ (or -Output):
 #   MagicKeyboardSetup.exe                  one-file installer (driver package + tray embedded)
 #   MagicKeyboard-<version>-manual.zip      driver package, tray app and PowerShell installer
 & (Join-Path $PSScriptRoot 'Build-Gui.ps1')
 $driverLog=& cmd /c ('"'+(Join-Path $PSScriptRoot 'driver\Build.cmd')+'" 2>&1')
 if($LASTEXITCODE){$driverLog | Out-Host;throw 'Driver build failed.'}
 $package=Join-Path $PSScriptRoot 'driver\x64\Release\package'
-$dist=Join-Path $PSScriptRoot 'dist'
+$dist=Join-Path $PSScriptRoot $Output
 if(Test-Path -LiteralPath $dist){Remove-Item -LiteralPath $dist -Recurse -Force}
 $manual=Join-Path $dist "MagicKeyboard-$Version-manual"
 New-Item -ItemType Directory -Force -Path (Join-Path $manual 'driver') | Out-Null
