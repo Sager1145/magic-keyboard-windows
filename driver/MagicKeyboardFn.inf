@@ -8,7 +8,7 @@ Class       = HIDClass
 ClassGuid   = {745a17a0-74d3-11d0-b6fe-00a0c90f57da}
 Provider    = %Provider%
 CatalogFile = MagicKeyboardFn.cat
-DriverVer   = 11/05/2026,1.0.5.0
+DriverVer   = 11/05/2026,1.0.7.0
 PnpLockdown = 1
 
 [DestinationDirs]
@@ -26,6 +26,7 @@ MagicKeyboardControls.exe = 1
 
 [MagicKb_Models.NTamd64]
 %DeviceDesc% = MagicKb_Inst, USB\VID_05AC&PID_0320&MI_01
+%AuxDesc%    = MagicKb_Aux, USB\VID_05AC&PID_0320&MI_00
 
 [MagicKb_Inst.NT]
 Include   = input.inf
@@ -49,6 +50,23 @@ AddReg  = MagicKb_Filters
 [MagicKb_Filters]
 HKR,,"LowerFilters",0x00010000,"vhf","MagicKeyboardFn"
 
+; Interface 0 carries the battery report (input report 0x90). Its HID report descriptor is
+; invalid for Windows' HID parser (HidUsb fails with Code 10), so it gets WinUSB instead and
+; the tray app asks for the report with a class GET_REPORT control request.
+[MagicKb_Aux.NT]
+Include = winusb.inf
+Needs   = WINUSB.NT
+
+[MagicKb_Aux.NT.HW]
+AddReg = MagicKb_AuxReg
+
+[MagicKb_AuxReg]
+HKR,,"DeviceInterfaceGUIDs",0x00010000,"{8C4D7C2A-4B6E-4F7B-9E3A-6A1F0D5B2E91}"
+
+[MagicKb_Aux.NT.Services]
+Include = winusb.inf
+Needs   = WINUSB.NT.Services
+
 [MagicKb_Inst.NT.Services]
 Include    = input.inf
 Needs      = HID_Inst.NT.Services
@@ -65,5 +83,6 @@ ServiceBinary = %13%\MagicKeyboardFn.sys
 Provider     = "Orchard Keys"
 Manufacturer = "Apple Inc."
 DeviceDesc   = "Magic Keyboard (USB-C) - Orchard Keys"
+AuxDesc      = "Magic Keyboard (USB-C) battery - Orchard Keys"
 ServiceDesc  = "Orchard Keys Fn mapping filter"
 DiskName     = "Orchard Keys driver disk"

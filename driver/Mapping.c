@@ -90,6 +90,8 @@ static void DefaultConfig(MAGICKB_CONFIG* c)
 	c->Row[4].Type = MAGICKB_ACTION_APP;
 	SetAction(&c->Gesture[MAGICKB_GESTURE_FN][0], MAGICKB_ACTION_CHORD, 0x08, 0x2C); // Win+Space
 	SetAction(&c->Gesture[MAGICKB_GESTURE_LOCK][2], MAGICKB_ACTION_CHORD, 0x08, 0x0F); // Win+L
+	for (UCHAR i = 0; i < 8; ++i)
+		c->ModifierMap[i] = i; // Control, Option (Alt) and Command (Win) as labeled
 }
 
 static BOOLEAN ValidAction(const MAGICKB_ACTION* a, BOOLEAN gesture)
@@ -120,6 +122,9 @@ static BOOLEAN ValidConfig(const MAGICKB_CONFIG* c)
 	if (c->DoubleTapMs < 100 || c->DoubleTapMs > 1000 || c->LongPressMs < 200 || c->LongPressMs > 5000 ||
 		c->LockHoldMs < 500 || c->LockHoldMs > 5000)
 		return FALSE;
+	for (int i = 0; i < 8; ++i)
+		if (c->ModifierMap[i] > 7)
+			return FALSE;
 	// Fn itself has only a tap action.
 	if (c->Gesture[MAGICKB_GESTURE_FN][1].Type != MAGICKB_ACTION_NONE ||
 		c->Gesture[MAGICKB_GESTURE_FN][2].Type != MAGICKB_ACTION_NONE)
@@ -479,6 +484,18 @@ void EngineProcessReport(UCHAR* report)
 {
 	UCHAR raw[MAGICKB_REPORT_LENGTH];
 	RtlCopyMemory(raw, report, sizeof(raw));
+	// Remap Control / Option / Command first, so Windows and the action layer both see
+	// the remapped modifiers.
+	KIRQL irql;
+	UCHAR map[8];
+	KeAcquireSpinLock(&g_EngineLock, &irql);
+	RtlCopyMemory(map, g_Config.ModifierMap, sizeof(map));
+	KeReleaseSpinLock(&g_EngineLock, irql);
+	UCHAR mods = 0;
+	for (int i = 0; i < 8; ++i)
+		if (report[1] & (1 << i))
+			mods |= (UCHAR)(1 << (map[i] & 7));
+	report[1] = mods;
 	BOOLEAN fn = (report[9] & 0x02) != 0;
 	BOOLEAN lock = (report[9] & 0x08) != 0;
 	BOOLEAN other = report[1] != 0 || (report[9] & 0x05) != 0;
@@ -492,7 +509,6 @@ void EngineProcessReport(UCHAR* report)
 			other = TRUE;
 	}
 
-	KIRQL irql;
 	KeAcquireSpinLock(&g_EngineLock, &irql);
 	if (!g_Vhf)
 	{

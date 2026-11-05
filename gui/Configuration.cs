@@ -20,6 +20,11 @@ namespace MagicKeyboard {
   public int LockHoldMs {get;set;} // how long Lock is held for its hold action
   public const int MinLockHoldMs=500,MaxLockHoldMs=5000;
   public Binding[] Keys {get;set;}
+  // What each modifier key acts as: "control", "option" (Alt) or "command" (Win).
+  // Order: left control, left option, left command, right command, right option.
+  public string[] Modifiers {get;set;}
+  public static readonly string[] ModifierDefaults={"control","option","command","command","option"};
+  public static readonly string[] ModifierTargets={"control","option","command"};
   public Binding[] Gestures {get;set;}
   public static readonly string Folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"MagicKeyboardControls");
   public static readonly string FileName=Path.Combine(Folder,"settings.json");
@@ -29,7 +34,7 @@ namespace MagicKeyboard {
   public static readonly int[] Order={13,0,1,2,3,4,5,6,7,8,9,10,11,12};
   public static readonly string[] RowLabels={"Fn","F1","F2","F3","F4","F5","F6","F7","F8","F9","F10","F11","F12","Lock"};
   public static Configuration Create() {
-   Configuration c=new Configuration{Version=3,RequireFn=true,Enabled=false,LockVirtualKey=0x5F,LockScanCode=-1,LockHoldMs=1000,Keys=new Binding[14],Gestures=EmptyGestures()};
+   Configuration c=new Configuration{Version=3,RequireFn=true,Enabled=false,LockVirtualKey=0x5F,LockScanCode=-1,LockHoldMs=1000,Keys=new Binding[14],Gestures=EmptyGestures(),Modifiers=(string[])ModifierDefaults.Clone()};
    for(int i=0;i<14;i++)c.Keys[i]=DefaultBinding(i,0);c.SetBinding(12,2,DefaultBinding(12,2));return c;
   }
   public static Binding DefaultBinding(int key,int gesture){
@@ -67,6 +72,8 @@ namespace MagicKeyboard {
    // Fn itself has only a tap action.
    SetBinding(13,1,new Binding());SetBinding(13,2,new Binding());
    if(LockHoldMs==0)LockHoldMs=1000;
+   if(Modifiers==null || Modifiers.Length!=ModifierDefaults.Length)Modifiers=(string[])ModifierDefaults.Clone();
+   foreach(string m in Modifiers)if(Array.IndexOf(ModifierTargets,m)<0)throw new InvalidDataException("Unknown modifier key mapping.");
    if(LockHoldMs<MinLockHoldMs || LockHoldMs>MaxLockHoldMs) throw new InvalidDataException("Lock hold time must be 0.5 to 5 seconds.");
    if(LockVirtualKey<0 || LockVirtualKey>255) throw new InvalidDataException("Invalid learned Lock key.");
   }

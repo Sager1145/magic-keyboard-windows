@@ -350,4 +350,52 @@ namespace MagicKeyboard {
   }
   protected override void Dispose(bool disposing){if(disposing)toolTip.Dispose();base.Dispose(disposing);}
  }
+
+ // The bottom-row modifier keys (control, option, command | space | command, option),
+ // aligned with KeyboardRow; each shows what it acts as. Click a key to edit it.
+ sealed class ModifierRow:Control {
+  public static readonly string[] Names={"control","option","command","command","option"};
+  public static readonly string[] Symbols={"⌃","⌥","⌘","⌘","⌥"};
+  Func<int,string> label=m=>"";Func<int,bool> changed=m=>false;Func<int,string> tip=m=>"";
+  int selected=-1,hover=-1;readonly ToolTip toolTip=new ToolTip();
+  public event EventHandler SelectedChanged;
+  public ModifierRow(){SetStyle(ControlStyles.AllPaintingInWmPaint|ControlStyles.OptimizedDoubleBuffer|ControlStyles.UserPaint|ControlStyles.ResizeRedraw,true);Cursor=Cursors.Hand;Height=60;}
+  public void Bind(Func<int,string> labelOf,Func<int,bool> changedOf,Func<int,string> tipOf){label=labelOf;changed=changedOf;tip=tipOf;Invalidate();}
+  public int Selected{get{return selected;}set{if(selected==value)return;selected=value;Invalidate();}}
+  // Same span as KeyboardRow (14 square keys); keys 2 and 3 are wider, space fills the gap.
+  RectangleF Cap(int i){
+   float gap=6,extra=10,w=Math.Min((Width-1-gap*13-extra*2)/14f,92f);
+   float span=w*14+gap*13+extra*2,left=(Width-1-span)/2,h=Height-4;
+   float[] widths={w,w,w*1.3f,0,w*1.3f,w};
+   float fixedWidth=0;foreach(float x in widths)fixedWidth+=x;
+   widths[3]=span-fixedWidth-gap*5; // space bar
+   float pos=left;int slot=i<3?i:i+1; // slot 3 is the space bar
+   for(int k=0;k<slot;k++)pos+=widths[k]+gap;
+   return new RectangleF(pos,1,widths[slot],h);
+  }
+  RectangleF Space(){RectangleF a=Cap(2),b=Cap(3);return new RectangleF(a.Right+6,a.Y,b.X-a.Right-12,a.Height);}
+  int HitTest(Point p){for(int i=0;i<Names.Length;i++)if(Cap(i).Contains(p))return i;return -1;}
+  protected override void OnMouseMove(MouseEventArgs e){int h=HitTest(e.Location);if(h==hover)return;hover=h;Invalidate();toolTip.SetToolTip(this,h<0?"":tip(h));}
+  protected override void OnMouseLeave(EventArgs e){hover=-1;Invalidate();}
+  protected override void OnMouseDown(MouseEventArgs e){int h=HitTest(e.Location);if(h<0||h==selected)return;selected=h;Invalidate();if(SelectedChanged!=null)SelectedChanged(this,EventArgs.Empty);}
+  protected override void OnPaint(PaintEventArgs e){
+   Graphics g=e.Graphics;g.SmoothingMode=SmoothingMode.AntiAlias;g.Clear(Parent!=null?Parent.BackColor:Theme.Back);
+   using(GraphicsPath space=Theme.Round(Space(),Theme.Radius))using(Pen dashed=new Pen(Theme.Line){DashStyle=DashStyle.Dash})g.DrawPath(dashed,space);
+   float size=Cap(0).Width;
+   using(Font small=new Font("Segoe UI",Math.Max(7f,size*0.14f)))
+   using(Font big=new Font("Segoe UI Semibold",Math.Max(9f,size*0.22f))){
+    for(int i=0;i<Names.Length;i++){
+     RectangleF r=Cap(i);bool sel=i==selected;
+     using(GraphicsPath cap=Theme.Round(r,Theme.Radius)){
+      using(SolidBrush fill=new SolidBrush(sel?Theme.Accent:i==hover?Theme.Hover:Theme.Card))g.FillPath(fill,cap);
+      using(Pen edge=new Pen(sel?Theme.Accent:changed(i)?Theme.Accent:Theme.Line))g.DrawPath(edge,cap);
+     }
+     Color ink=sel?Theme.AccentInk:changed(i)?Theme.Accent:Theme.Ink,muted=sel?Theme.AccentInk:Theme.Muted;
+     TextRenderer.DrawText(g,Symbols[i]+" "+Names[i],small,new Rectangle((int)(r.X+size*0.1f),(int)(r.Y+r.Height*0.08f),(int)(r.Width-size*0.15f),(int)(r.Height*0.35f)),muted,TextFormatFlags.Left|TextFormatFlags.NoPadding|TextFormatFlags.EndEllipsis);
+     TextRenderer.DrawText(g,label(i),big,new Rectangle((int)r.X,(int)(r.Y+r.Height*0.38f),(int)r.Width,(int)(r.Height*0.55f)),ink,TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter|TextFormatFlags.NoPadding);
+    }
+   }
+  }
+  protected override void Dispose(bool disposing){if(disposing)toolTip.Dispose();base.Dispose(disposing);}
+ }
 }

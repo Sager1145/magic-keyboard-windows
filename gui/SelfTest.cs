@@ -61,7 +61,7 @@ namespace MagicKeyboard {
   // Mirrors DefaultConfig() in driver\Mapping.c: the driver must behave the same with or without the app.
   static void TestDriverProfile(){
    byte[] expected=new byte[Driver.ConfigSize];
-   expected[0]=1;expected[8]=0x2C;expected[9]=1;expected[10]=0x8A;expected[11]=2;expected[12]=0xE8;expected[13]=3;
+   expected[0]=2;expected[8]=0x2C;expected[9]=1;expected[10]=0x8A;expected[11]=2;expected[12]=0xE8;expected[13]=3;
    ushort[] consumer={0x70,0x6F,0,0,0,0,0xB6,0xCD,0xB5,0xE2,0xEA,0xE9};
    byte[] chord={0,0,0x2B,0x16,0x0B,0x16};
    for(int i=0;i<12;i++){
@@ -73,8 +73,12 @@ namespace MagicKeyboard {
    expected[16+5*4+1]=0x0A; // Screenshot: Win+Shift+S
    expected[64+8]=2;expected[64+9]=8;expected[64+10]=0x0F; // Lock long: Win+L
    expected[76]=2;expected[77]=8;expected[78]=0x2C; // Fn single: Win+Space
+   for(int i=0;i<8;i++)expected[88+i]=(byte)i; // modifiers as labeled
    byte[] actual=Driver.Build(Configuration.Create());
    for(int i=0;i<expected.Length;i++)if(actual[i]!=expected[i])throw new Exception("Default profile differs from the driver at byte "+i+".");
+   Configuration mac=Configuration.Create();mac.Modifiers[0]="command";mac.Modifiers[2]="control";mac.Modifiers[3]="control";
+   byte[] swapped=Driver.Build(mac);
+   if(swapped[88]!=3||swapped[91]!=0||swapped[95]!=4||swapped[94]!=6)throw new Exception("Modifier remap did not build.");
    byte type,mods;ushort usage;
    Driver.Translate(new Binding("shortcut","Ctrl+Shift+F5"),out type,out mods,out usage);
    if(type!=Driver.Chord||mods!=3||usage!=0x3E)throw new Exception("Shortcut did not translate to HID.");

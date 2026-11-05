@@ -27,8 +27,9 @@ namespace MagicKeyboard {
 
   Configuration draft;ActionRunner runner;
   KeyboardRow keyboard;Segmented mode,press;RoundCombo action;Field valueField;TextBox value;RoundButton valueButton,tryIt,reset;
-  Label title,subtitle,valueLabel,hint,error,status,live;Chip driverPill,trayPill;Stepper holdTime;FlowLayoutPanel holdRow;FileSystemWatcher liveWatch;int liveSeq=-1;
+  Label title,subtitle,valueLabel,hint,error,status,live;Chip driverPill,trayPill,batteryPill;Stepper holdTime;FlowLayoutPanel holdRow;FileSystemWatcher liveWatch;int liveSeq=-1;
   TableLayoutPanel editor;
+  ModifierRow modifiers;Segmented actsAs;Label actionLabel;FlowLayoutPanel modRow;
   bool filling;int key,gesture,lastAction=-1;
   readonly System.Windows.Forms.Timer statusPoll=new System.Windows.Forms.Timer{Interval=1000};
   readonly System.Windows.Forms.Timer apply=new System.Windows.Forms.Timer{Interval=450};
@@ -36,7 +37,7 @@ namespace MagicKeyboard {
   public MainForm() {
    try{draft=Configuration.Load();}catch(Exception e){MessageBox.Show("Saved profile could not be read. Defaults will be used.\n"+e.Message,Theme.ProductName);draft=Configuration.Create();}
    Text=Theme.ProductName;Font=Theme.Body;BackColor=Theme.Back;ForeColor=Theme.Ink;
-   MinimumSize=new Size(900,620);Size=new Size(980,660);StartPosition=FormStartPosition.CenterScreen;AutoScaleMode=AutoScaleMode.Dpi;
+   MinimumSize=new Size(900,700);Size=new Size(980,750);StartPosition=FormStartPosition.CenterScreen;AutoScaleMode=AutoScaleMode.Dpi;
    DoubleBuffered=true;
    try{Icon=Theme.AppIcon();}catch(Exception){}
    BuildUi();Select(0,0);
@@ -65,8 +66,8 @@ namespace MagicKeyboard {
   }
 
   void BuildUi() {
-   TableLayoutPanel page=new TableLayoutPanel{Dock=DockStyle.Fill,Padding=new Padding(24,18,24,12),ColumnCount=1,RowCount=5,BackColor=Theme.Back};
-   page.RowStyles.Add(new RowStyle(SizeType.AutoSize));page.RowStyles.Add(new RowStyle(SizeType.AutoSize));page.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+   TableLayoutPanel page=new TableLayoutPanel{Dock=DockStyle.Fill,Padding=new Padding(24,18,24,12),ColumnCount=1,RowCount=6,BackColor=Theme.Back};
+   page.RowStyles.Add(new RowStyle(SizeType.AutoSize));page.RowStyles.Add(new RowStyle(SizeType.AutoSize));page.RowStyles.Add(new RowStyle(SizeType.AutoSize));page.RowStyles.Add(new RowStyle(SizeType.AutoSize));
    page.RowStyles.Add(new RowStyle(SizeType.Percent,100));page.RowStyles.Add(new RowStyle(SizeType.AutoSize));
    Controls.Add(page);
 
@@ -77,7 +78,7 @@ namespace MagicKeyboard {
    int mark=(int)(40*DeviceDpi/96f);
    name.Controls.Add(new PictureBox{Image=Theme.Logo(mark,false,Color.Empty),Size=new Size(mark,mark),Margin=new Padding(0,2,10,0)});
    name.Controls.Add(MakeLabel(Theme.ProductName,20,FontStyle.Bold,Theme.Ink));
-   driverPill=Pill();trayPill=Pill();name.Controls.Add(driverPill);name.Controls.Add(trayPill);
+   driverPill=Pill();trayPill=Pill();batteryPill=Pill();batteryPill.Visible=false;name.Controls.Add(driverPill);name.Controls.Add(batteryPill);name.Controls.Add(trayPill);
    header.Controls.Add(name,0,0);
    mode=new Segmented{Items=new[]{"F1–F12 first","Actions first"},Dock=DockStyle.Top,Margin=new Padding(0,6,0,0),Font=Font};
    mode.Selected=draft.RequireFn?0:1;
@@ -90,9 +91,14 @@ namespace MagicKeyboard {
    keyboard.Bind(k=>Theme.Glyph(KeyCapAction(k)),k=>KeyName(k)+": "+Summary(k));keyboard.ActionsFirst=!draft.RequireFn;
    keyboard.SelectedChanged+=(s,e)=>Select(keyboard.SelectedKey,0);
    page.Controls.Add(keyboard,0,1);
+   // Modifier keys: control, option, command on both sides of the space bar
+   modifiers=new ModifierRow{Dock=DockStyle.Fill,Margin=new Padding(0,0,0,12),Font=Font};
+   modifiers.Bind(m=>TargetShort(draft.Modifiers[m]),m=>draft.Modifiers[m]!=Configuration.ModifierDefaults[m],m=>ModifierTitle(m)+": acts as "+TargetLong(draft.Modifiers[m]));
+   modifiers.SelectedChanged+=(s,e)=>Select(20+modifiers.Selected,0);
+   page.Controls.Add(modifiers,0,2);
    // Live line: the key or combination being pressed and what it does
    live=new Label{AutoSize=true,Font=new Font("Segoe UI",11f,FontStyle.Bold),ForeColor=Theme.Muted,Margin=new Padding(3,0,3,12),Text="Press a function key to see it here."};
-   page.Controls.Add(live,0,2);
+   page.Controls.Add(live,0,3);
 
    // Editor card
    editor=new TableLayoutPanel{ColumnCount=1,RowCount=10,BackColor=Theme.Card};
@@ -106,7 +112,7 @@ namespace MagicKeyboard {
    titleRow.Controls.Add(press,1,0);
    editor.Controls.Add(titleRow,0,0);
    subtitle=MakeLabel("",9.75f,FontStyle.Regular,Theme.Muted);subtitle.Margin=new Padding(3,2,3,14);editor.Controls.Add(subtitle,0,1);
-   editor.Controls.Add(MakeLabel("Action",9.75f,FontStyle.Bold,Theme.Ink),0,2);
+   actionLabel=MakeLabel("Action",9.75f,FontStyle.Bold,Theme.Ink);editor.Controls.Add(actionLabel,0,2);
    action=new RoundCombo{Dock=DockStyle.Top,MaxDropDownItems=16,Margin=new Padding(3,4,3,12)};
    foreach(string[] category in Categories){
     if(category[0].Length>0)action.Items.Add(new ActionItem{Text=category[0],Header=true});
@@ -132,7 +138,7 @@ namespace MagicKeyboard {
    hint=MakeLabel("",9,FontStyle.Regular,Theme.Muted);hint.MaximumSize=new Size(800,0);hint.Margin=new Padding(3,12,3,0);editor.Controls.Add(hint,0,4);
    FlowLayoutPanel buttons=new FlowLayoutPanel{AutoSize=true,Dock=DockStyle.Fill,BackColor=Theme.Card};
    tryIt=FlatButton("Try it",true);tryIt.Click+=(s,e)=>TryAction();
-   reset=FlatButton("Use default",false);reset.Click+=(s,e)=>{draft.SetBinding(key,gesture,Configuration.DefaultBinding(key,gesture));Select(key,gesture);keyboard.Invalidate();Changed();};
+   reset=FlatButton("Use default",false);reset.Click+=(s,e)=>{if(key>=20){draft.Modifiers[key-20]=Configuration.ModifierDefaults[key-20];modifiers.Invalidate();Select(key,0);Changed();return;}draft.SetBinding(key,gesture,Configuration.DefaultBinding(key,gesture));Select(key,gesture);keyboard.Invalidate();Changed();};
    buttons.Controls.AddRange(new Control[]{tryIt,reset});editor.Controls.Add(buttons,0,9);
    // Lock hold time, shown with Lock's Hold action
    holdRow=new FlowLayoutPanel{AutoSize=true,Dock=DockStyle.Top,WrapContents=false,BackColor=Theme.Card,Margin=new Padding(0,14,0,8)};
@@ -140,8 +146,17 @@ namespace MagicKeyboard {
    holdTime=new Stepper(Configuration.MinLockHoldMs/1000m,Configuration.MaxLockHoldMs/1000m,0.1m,"s");
    holdTime.ValueChanged+=(s,e)=>{if(filling)return;draft.LockHoldMs=(int)(holdTime.Value*1000);Select(key,gesture);keyboard.Invalidate();Changed();};
    Label holdUnit=MakeLabel("0.5 – 5 seconds",9,FontStyle.Regular,Theme.Muted);holdUnit.Margin=new Padding(10,9,0,0);
-   holdRow.Controls.AddRange(new Control[]{holdLabel,holdTime,holdUnit});editor.Controls.Add(holdRow,0,8);
-   page.Controls.Add(Card(editor),0,3);
+   holdRow.Controls.AddRange(new Control[]{holdLabel,holdTime,holdUnit});
+   // What a modifier key acts as, shown for the bottom-row keys
+   modRow=new FlowLayoutPanel{AutoSize=true,Dock=DockStyle.Top,FlowDirection=FlowDirection.TopDown,WrapContents=false,BackColor=Theme.Card,Margin=new Padding(0,4,0,8)};
+   actsAs=new Segmented{Items=new[]{"Control (Ctrl)","Option (Alt)","Command (Win)"},Width=420,Margin=new Padding(3,0,3,12),Font=Font};
+   actsAs.SelectedChanged+=(s,e)=>{if(filling||key<20)return;draft.Modifiers[key-20]=Configuration.ModifierTargets[actsAs.Selected];modifiers.Invalidate();Select(key,0);Changed();};
+   Label modHint=MakeLabel("The keyboard driver remaps the key itself, so it works in every app, even when this app isn't running. Shortcuts follow: with Command acting as Ctrl, Command+C copies.",9,FontStyle.Regular,Theme.Muted);
+   modHint.MaximumSize=new Size(800,0);modHint.Margin=new Padding(3,0,3,0);
+   modRow.Controls.AddRange(new Control[]{actsAs,modHint});
+   FlowLayoutPanel extras=new FlowLayoutPanel{AutoSize=true,Dock=DockStyle.Top,FlowDirection=FlowDirection.TopDown,WrapContents=false,BackColor=Theme.Card,Margin=new Padding(0)};
+   extras.Controls.AddRange(new Control[]{holdRow,modRow});editor.Controls.Add(extras,0,8);
+   page.Controls.Add(Card(editor),0,4);
 
    // Footer: save state, restore all
    TableLayoutPanel footer=new TableLayoutPanel{Dock=DockStyle.Fill,AutoSize=true,ColumnCount=3,Margin=new Padding(0)};
@@ -150,10 +165,10 @@ namespace MagicKeyboard {
    RoundButton restore=new RoundButton("Restore all defaults",false){Margin=new Padding(8,0,0,0)};
    restore.Click+=(s,e)=>{
     if(MessageBox.Show(this,"Reset every key to its default action?",Theme.ProductName,MessageBoxButtons.OKCancel,MessageBoxIcon.Question)!=DialogResult.OK)return;
-    draft=Configuration.Create();filling=true;mode.Selected=0;filling=false;keyboard.ActionsFirst=false;Select(0,0);keyboard.Invalidate();Changed();
+    draft=Configuration.Create();filling=true;mode.Selected=0;filling=false;keyboard.ActionsFirst=false;Select(0,0);keyboard.Invalidate();modifiers.Invalidate();Changed();
    };
    footer.Controls.Add(status,0,0);footer.Controls.Add(restore,1,0);
-   page.Controls.Add(footer,0,4);
+   page.Controls.Add(footer,0,5);
   }
 
   void DrawAction(object sender,DrawItemEventArgs e){
@@ -190,10 +205,30 @@ namespace MagicKeyboard {
    return parts.Count==0?"Do nothing":String.Join("  ·  ",parts);
   }
 
+  static string ModifierTitle(int m){string n=ModifierRow.Names[m];return (m<3?"Left ":"Right ")+Char.ToUpperInvariant(n[0])+n.Substring(1);}
+  static string TargetShort(string t){return t=="control"?"Ctrl":t=="option"?"Alt":"Win";}
+  static string TargetLong(string t){return t=="control"?"Ctrl":t=="option"?"Alt":"the Windows key";}
+  // Modifier keys (20-24): only "acts as" applies.
+  void SelectModifier(int m){
+   key=20+m;gesture=0;
+   filling=true;
+   keyboard.SelectedKey=-1;modifiers.Selected=m;
+   press.Visible=false;holdRow.Visible=false;
+   title.Text=ModifierTitle(m);
+   subtitle.Text="The "+ModifierRow.Symbols[m]+" "+ModifierRow.Names[m]+" key "+(m<3?"left":"right")+" of the space bar.  Default: "+TargetLong(Configuration.ModifierDefaults[m])+".";
+   actionLabel.Text="Acts as";action.Visible=false;hint.Visible=false;
+   valueLabel.Visible=valueField.Parent.Visible=false;editor.RowStyles[6].Height=0;ShowError(null);
+   tryIt.Visible=false;modRow.Visible=true;
+   actsAs.Selected=Array.IndexOf(Configuration.ModifierTargets,draft.Modifiers[m]);
+   filling=false;
+  }
+
   string HoldSeconds(){return (draft.LockHoldMs/1000.0).ToString("0.0#");}
 
   // Editor -----------------------------------------------------------------
   void Select(int k,int g){
+   if(k>=20){SelectModifier(k-20);return;}
+   modifiers.Selected=-1;actionLabel.Text="Action";action.Visible=hint.Visible=tryIt.Visible=true;modRow.Visible=false;
    if(k==13)g=0; // Fn itself has only a tap action
    key=k;gesture=g;
    Binding b=draft.GetBinding(k,g);
@@ -281,6 +316,18 @@ namespace MagicKeyboard {
    bool tray=AgentWindow.Running();
    SetPill(trayPill,tray,tray?"Tray on":"Tray off");
    if(tray)ReadLive();
+   ShowBattery(tray);
+  }
+  // Battery level as last read by the tray app (status line 5: percent;charging).
+  void ShowBattery(bool tray){
+   string[] f=new string[0];
+   if(tray){try{string[] lines=File.ReadAllText(AgentWindow.StatusFile).Split('\n');if(lines.Length>=5)f=lines[4].Trim().Split(';');}catch(IOException){}catch(UnauthorizedAccessException){}}
+   int percent;
+   if(f.Length<2 || !int.TryParse(f[0],out percent)){batteryPill.Visible=false;return;}
+   bool charging=f[1]=="1";
+   batteryPill.Text=(charging?"\u26A1 ":"")+"Battery "+percent+"%";
+   batteryPill.ForeColor=!charging && percent<=10?Theme.Bad:charging?Theme.Good:Theme.Ink;
+   batteryPill.Visible=true;
   }
   // Shows the key or combination the tray app last reported, lit while held.
   void ReadLive(){

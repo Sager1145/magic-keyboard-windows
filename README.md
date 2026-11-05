@@ -22,6 +22,10 @@ Every key can be remapped, including brightness and volume. Lock has separate **
 action. You can choose whether the row gives F1–F12 or the actions without Fn, and the
 settings window shows each key or combination as you press it.
 
+**Modifier keys:** control, option and command on either side can each act as Ctrl, Alt or
+Win, for example Command as Ctrl for Mac-style shortcuts. The driver remaps them, so this
+works in every app.
+
 Available actions:
 - **Media and display:** brightness, volume, mute, media keys.
 - **Windows:** Task View, Search, voice typing, Do Not Disturb, Notification Center,

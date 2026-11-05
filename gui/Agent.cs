@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Linq;
 using System.Drawing;
@@ -18,6 +18,7 @@ namespace MagicKeyboard {
   readonly bool observe;bool started;
   string driverText="Starting",actionText="",inputText="No function-key input yet";
   int liveHeld,liveKey=-1,liveSeq;bool liveFn;
+  BatteryReading battery;bool lowWarned;System.Threading.Timer batteryPoll;int polling;
   IntPtr usbNotifications;
   [StructLayout(LayoutKind.Sequential)] struct DeviceFilter {
    public int Size, Type, Reserved;
@@ -52,6 +53,13 @@ namespace MagicKeyboard {
    };
    usbNotifications=RegisterDeviceNotification(Handle,ref filter,0);
    retry.Tick+=(s,e)=>{if(capture==null)Connect();};retry.Start();
+   // Battery: a Bluetooth battery device reports its level at connect and notifies on each
+   // change. This keyboard only answers when asked, so read it at connect and on wake, then
+   // check often enough to catch each 1% step: every minute while charging (about 1% a
+   // minute), every 5 minutes on battery (well under 1% an hour). The display only changes
+   // when the level does.
+   batteryPoll=new System.Threading.Timer(s=>PollBattery(),null,1000,System.Threading.Timeout.Infinite);
+   Microsoft.Win32.SystemEvents.PowerModeChanged+=OnPowerMode;
    Connect();
    Directory.CreateDirectory(Configuration.Folder);
    watcher=new FileSystemWatcher(Configuration.Folder,"settings.json"){NotifyFilter=NotifyFilters.LastWrite|NotifyFilters.FileName,SynchronizingObject=this};
@@ -86,8 +94,34 @@ namespace MagicKeyboard {
   }
   void WriteStatus(){
    // Line 4 feeds the settings window's live display: held keys;last key;Fn held;press count.
+   // Line 5 is the battery: percent;charging (empty when unknown).
    string live=liveHeld+";"+liveKey+";"+(liveFn?1:0)+";"+liveSeq;
-   try{File.WriteAllText(StatusFile,driverText+"\n"+actionText+"\n"+inputText+"\n"+live);}catch(IOException){}catch(UnauthorizedAccessException){}
+   string level=battery.Valid?battery.Percent+";"+(battery.Charging?1:0):"";
+   try{File.WriteAllText(StatusFile,driverText+"\n"+actionText+"\n"+inputText+"\n"+live+"\n"+level);}catch(IOException){}catch(UnauthorizedAccessException){}
+  }
+  // Runs on a pool thread: HID GET_REPORT is a blocking USB / Bluetooth round trip.
+  void PollBattery(){
+   if(Interlocked.Exchange(ref polling,1)!=0)return;
+   try{
+    BatteryReading r;
+    try{r=Battery.Read();}catch(Exception){r=new BatteryReading();}
+    Post(()=>OnBattery(r));
+    try{batteryPoll.Change(r.Valid && !r.Charging?BatteryIdleMs:BatteryChargingMs,System.Threading.Timeout.Infinite);}catch(ObjectDisposedException){}
+   }finally{Interlocked.Exchange(ref polling,0);}
+  }
+  const int BatteryChargingMs=60000,BatteryIdleMs=300000;
+  void ReadBatterySoon(int delayMs){if(batteryPoll!=null)try{batteryPoll.Change(delayMs,System.Threading.Timeout.Infinite);}catch(ObjectDisposedException){}}
+  void OnPowerMode(object sender,Microsoft.Win32.PowerModeChangedEventArgs e){if(e.Mode==Microsoft.Win32.PowerModes.Resume)ReadBatterySoon(5000);}
+  void OnBattery(BatteryReading r){
+   bool changed=r.Valid!=battery.Valid || r.Percent!=battery.Percent || r.Charging!=battery.Charging;
+   battery=r;
+   if(tray!=null)tray.Text=r.Valid?Theme.ProductName+" · battery "+r:Theme.ProductName;
+   if(r.Valid && !r.Charging && r.Percent<=10 && !lowWarned && tray!=null){
+    lowWarned=true;
+    tray.ShowBalloonTip(8000,"Magic Keyboard battery low",r.Percent+"% left. Connect the USB-C cable to charge.",ToolTipIcon.Warning);
+   }
+   if(r.Valid && (r.Charging || r.Percent>15))lowWarned=false;
+   if(changed)WriteStatus();
   }
   void Connect(){
    if(capture!=null){capture.Dispose();capture=null;}
@@ -130,13 +164,15 @@ namespace MagicKeyboard {
    if(message.Msg==0x219 && message.LParam!=IntPtr.Zero &&
       message.WParam.ToInt32()==0x8000 && Marshal.ReadInt32(message.LParam,4)==5){
     string device=Marshal.PtrToStringUni(IntPtr.Add(message.LParam,28));
-    if(device!=null && device.IndexOf("VID_05AC&PID_0320",StringComparison.OrdinalIgnoreCase)>=0)Connect();
+    if(device!=null && device.IndexOf("VID_05AC&PID_0320",StringComparison.OrdinalIgnoreCase)>=0){Connect();ReadBatterySoon(3000);}
    }
    base.WndProc(ref message);
   }
   protected override void Dispose(bool disposing){
    if(disposing){
     if(watcher!=null)watcher.Dispose();
+    Microsoft.Win32.SystemEvents.PowerModeChanged-=OnPowerMode;
+    if(batteryPoll!=null)batteryPoll.Dispose();
     if(usbNotifications!=IntPtr.Zero){UnregisterDeviceNotification(usbNotifications);usbNotifications=IntPtr.Zero;}
     if(capture!=null){capture.Dispose();capture=null;}
     retry.Dispose();reload.Dispose();

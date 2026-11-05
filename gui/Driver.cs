@@ -11,7 +11,9 @@ namespace MagicKeyboard {
   public const string Path=@"\\.\MagicKeyboardFn";
   const uint GetConfig=0x9A4B6008; // CTL_CODE(0x9A4B,0x802,METHOD_BUFFERED,FILE_READ_ACCESS)
   const uint SetConfig=0x9A4BA00C; // CTL_CODE(0x9A4B,0x803,METHOD_BUFFERED,FILE_WRITE_ACCESS)
-  public const int ConfigSize=88;
+  public const int ConfigSize=96;
+  // HID modifier bit of each physical modifier key, in Configuration.Modifiers order.
+  static readonly int[] ModifierBits={0,2,3,7,6};
   public const byte None=0,Key=1,Chord=2,Consumer=3,SystemControl=4,App=5;
   [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)]
   static extern SafeFileHandle CreateFile(string name,uint access,uint share,IntPtr security,uint creation,uint flags,IntPtr template);
@@ -43,7 +45,7 @@ namespace MagicKeyboard {
 
   public static byte[] Build(Configuration c) {
    byte[] b=new byte[ConfigSize];
-   BitConverter.GetBytes(1).CopyTo(b,0);
+   BitConverter.GetBytes(2).CopyTo(b,0);
    BitConverter.GetBytes(c.RequireFn?0:1).CopyTo(b,4);
    BitConverter.GetBytes((ushort)300).CopyTo(b,8);
    BitConverter.GetBytes((ushort)650).CopyTo(b,10);
@@ -52,6 +54,11 @@ namespace MagicKeyboard {
    for(int g=0;g<3;g++){
     Put(b,64+g*4,c.GetBinding(12,g));
     if(g==0)Put(b,76,c.GetBinding(13,0)); // Fn itself has only a tap action
+   }
+   for(int i=0;i<8;i++)b[88+i]=(byte)i;
+   for(int m=0;m<ModifierBits.Length;m++){
+    int side=ModifierBits[m]&4;
+    b[88+ModifierBits[m]]=(byte)(side+(c.Modifiers[m]=="control"?0:c.Modifiers[m]=="option"?2:3));
    }
    return b;
   }

@@ -16,7 +16,7 @@ namespace MagicKeyboardSetup {
  // as embedded resources and installs them like installer\Install-MagicKeyboardFn.ps1.
  sealed class SetupForm:Form {
   static readonly string[] Files={"MagicKeyboardFn.inf","MagicKeyboardFn.sys","magickeyboardfn.cat","MagicKeyboardFn.cer","MagicKeyboardControls.exe"};
-  const string HardwareId=@"USB\VID_05AC&PID_0320&MI_01";
+  const string HardwareId=@"USB\VID_05AC&PID_0320&MI_01",AuxHardwareId=@"USB\VID_05AC&PID_0320&MI_00";
   const string RunKey=@"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
   readonly TextBox log;readonly Button install,uninstall;readonly Label headline;
 
@@ -97,6 +97,9 @@ namespace MagicKeyboardSetup {
     if(error==unchecked((int)0xE000020B))Log("No keyboard connected. The driver installs automatically when you connect it.");
     else throw new Win32Exception(error);
    }
+   // Interface 0 carries the battery report; it gets the Windows HID driver from the same package.
+   bool auxReboot;
+   if(UpdateDriverForPlugAndPlayDevices(IntPtr.Zero,AuxHardwareId,inf,1,out auxReboot)){reboot|=auxReboot;Log("Enabled the keyboard's battery reporting.");}
    try{Directory.Delete(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"MagicKeyboardControls"),true);}catch(Exception){}
    if(reboot)Log("Restart Windows to finish.");
    else{

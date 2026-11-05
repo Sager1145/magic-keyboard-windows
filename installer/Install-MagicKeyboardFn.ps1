@@ -73,7 +73,14 @@ foreach($store in 'Root','TrustedPublisher'){
 if($LASTEXITCODE -and $LASTEXITCODE -ne 3010){throw "pnputil /add-driver returned $LASTEXITCODE."}
 $connected=Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object InstanceId -like "$hardwareId\*"
 $reboot=$false
-if($connected){$reboot=[MagicKbSetup]::Force($hardwareId,$inf)}
+if($connected){
+    $reboot=[MagicKbSetup]::Force($hardwareId,$inf)
+    # Interface 0 (battery report) gets the Windows HID driver from the same package.
+    $aux='USB\VID_05AC&PID_0320&MI_00'
+    if(Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object InstanceId -like "$aux\*"){
+        try{if([MagicKbSetup]::Force($aux,$inf)){$reboot=$true}}catch{"Battery interface not updated: $_"}
+    }
+}
 # A copy left by the earlier manual install is no longer used.
 Remove-Item -LiteralPath (Join-Path $env:windir 'System32\drivers\MagicKeyboardFn.sys') -ErrorAction SilentlyContinue
 
