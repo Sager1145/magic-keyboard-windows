@@ -110,7 +110,7 @@ from its HID battery collection.
 
 ## Build
 
-Requirements: the Windows EWDK mounted at `D:` and the in-box .NET Framework 4 compiler.
+Requirements: the Windows EWDK ISO mounted (any drive letter; or set `EWDK` to its root) and the in-box .NET Framework 4 compiler.
 
 ```powershell
 .\Build-Package.ps1   # builds the tray, driver package (test-signed) and dist\ release assets

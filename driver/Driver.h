@@ -1,8 +1,6 @@
 #pragma once
 
-#include <ntifs.h> // IoGetRequestorSessionId; includes ntddk.h
-#include <wdm.h>
-#include <initguid.h>
+#include <ntifs.h> // IoGetRequestorSessionId; includes ntddk.h and wdm.h
 #include <wdmsec.h>
 #include <vhf.h>
 #include "usbioctl.h"
@@ -18,9 +16,9 @@ extern "C" {
 	#define DRIVERNAME "MagicKeyboardFn"
 
 	#if DBG
-		#define DebugPrint(s, ...) DbgPrint(DRIVERNAME ": " s "\n", __VA_ARGS__);
+		#define DebugPrint(s, ...) DbgPrint(DRIVERNAME ": " s "\n", __VA_ARGS__)
 	#else
-		#define DebugPrint
+		#define DebugPrint(...) ((void)0)
 	#endif
 
 	///////////////////////////////////////////////////////////////////////////////
@@ -96,11 +94,11 @@ extern "C" {
 	{
 		BOOLEAN IsControl; // TRUE only for \Device\MagicKeyboardFn
 		BOOLEAN Deleted; // control object removed; open handles get STATUS_DEVICE_REMOVED
-		PDEVICE_OBJECT DeviceObject; // device object this extension belongs to
 		PDEVICE_OBJECT LowerDeviceObject; // next lower driver in same stack
 		PDEVICE_OBJECT Pdo; // the PDO
 		IO_REMOVE_LOCK RemoveLock;
-		VHFHANDLE Vhf; // virtual HID device that carries the mapped actions
+		VHFHANDLE Vhf; // virtual HID device that carries the mapped actions (engine lock)
+		BOOLEAN EngineDetached; // removal started: reports pass through, Vhf is not used
 		// Bluetooth battery level shown by Windows (DEVPKEY_Bluetooth_Battery on the PDO).
 		PIO_WORKITEM BatteryWork; // writes the property at PASSIVE_LEVEL
 		LONG BatteryShown; // level last written, 0 = none
@@ -123,9 +121,10 @@ extern "C" {
 
 	// Mapping engine (Mapping.c)
 	void EngineInitialize(PDRIVER_OBJECT driverObject);
-	void EngineStart(VHFHANDLE vhf);
-	void EngineStop(VHFHANDLE vhf);
-	void EngineProcessReport(UCHAR* report, VHFHANDLE vhf);
+	void EngineStart(PDEVICE_EXTENSION extension, VHFHANDLE vhf);
+	VHFHANDLE EngineDetach(PDEVICE_EXTENSION extension, BOOLEAN remove);
+	void EngineShutdown(void);
+	void EngineProcessReport(UCHAR* report, PDEVICE_EXTENSION extension);
 	void EngineGetConfig(MAGICKB_CONFIG* config);
 	NTSTATUS EngineSetConfig(const MAGICKB_CONFIG* config);
 	NTSTATUS EngineCreateVhf(PDEVICE_OBJECT fido, VHFHANDLE* vhf);

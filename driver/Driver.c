@@ -1,4 +1,5 @@
 #include "Driver.h"
+#include <initguid.h> // instantiates GUID_MAGICKB_CONTROL below, in this file only
 DRIVER_ADD_DEVICE AddDevice;
 
 #ifdef ALLOC_PRAGMA
@@ -33,11 +34,14 @@ static IO_CSQ g_Queue;
 static LIST_ENTRY g_Pending;
 static MAGICKB_EVENT g_Ring[MAGICKB_RING_LENGTH];
 static ULONG g_Head, g_Count, g_Sequence;
-static PFILE_OBJECT volatile g_Reader; // handle the tray app reads events on, if any
+static PFILE_OBJECT volatile g_Reader; // handle the tray app reads events on, if any (ring lock)
+static ULONG g_ReaderSession; // session of that handle's process
 
+// A reader counts only while its session is the one at the console: after a user switch,
+// app actions fall back to the driver's own shortcuts until the new user's tray connects.
 BOOLEAN ReaderConnected(void)
 {
-	return g_Reader != NULL;
+	return g_Reader != NULL && g_ReaderSession == SharedUserData->ActiveConsoleId;
 }
 
 static BOOLEAN IsControl(PDEVICE_OBJECT device)
@@ -164,7 +168,6 @@ static void CreateControl(PDRIVER_OBJECT driverObject)
 	}
 	RtlZeroMemory(control->DeviceExtension, sizeof(DEVICE_EXTENSION));
 	((PDEVICE_EXTENSION)control->DeviceExtension)->IsControl = TRUE;
-	((PDEVICE_EXTENSION)control->DeviceExtension)->DeviceObject = control;
 	status = IoCreateSymbolicLink(&link, &name);
 	if (!NT_SUCCESS(status))
 	{
@@ -239,7 +242,10 @@ NTSTATUS DispatchControl(IN PDEVICE_OBJECT control, IN PIRP irp)
 		return CompleteRequest(irp, STATUS_SUCCESS, 0);
 
 	case IRP_MJ_CLEANUP:
-		InterlockedCompareExchangePointer((PVOID volatile*)&g_Reader, NULL, stack->FileObject);
+		KeAcquireSpinLock(&g_RingLock, &irql);
+		if (g_Reader == stack->FileObject)
+			g_Reader = NULL;
+		KeReleaseSpinLock(&g_RingLock, irql);
 		FailPendingReads(stack->FileObject, STATUS_CANCELLED);
 		return CompleteRequest(irp, STATUS_SUCCESS, 0);
 
@@ -249,6 +255,8 @@ NTSTATUS DispatchControl(IN PDEVICE_OBJECT control, IN PIRP irp)
 		case IOCTL_MAGICKB_GET_CONFIG:
 			if (stack->Parameters.DeviceIoControl.OutputBufferLength < sizeof(MAGICKB_CONFIG))
 				return CompleteRequest(irp, STATUS_BUFFER_TOO_SMALL, 0);
+			if (!FromConsole(irp))
+				return CompleteRequest(irp, STATUS_ACCESS_DENIED, 0);
 			EngineGetConfig((MAGICKB_CONFIG*)irp->AssociatedIrp.SystemBuffer);
 			return CompleteRequest(irp, STATUS_SUCCESS, sizeof(MAGICKB_CONFIG));
 		case IOCTL_MAGICKB_SET_CONFIG:
@@ -262,16 +270,34 @@ NTSTATUS DispatchControl(IN PDEVICE_OBJECT control, IN PIRP irp)
 				return CompleteRequest(irp, STATUS_BUFFER_TOO_SMALL, 0);
 			if (!FromConsole(irp))
 				return CompleteRequest(irp, STATUS_ACCESS_DENIED, 0);
-			// One reader at a time; it keeps the channel until it closes its handle.
-			// A new reader starts from the next event, not from stale history.
-			if (InterlockedCompareExchangePointer((PVOID volatile*)&g_Reader, stack->FileObject, NULL) == NULL)
+			if (stack->FileObject->Flags & FO_CLEANUP_COMPLETE)
+				return CompleteRequest(irp, STATUS_CANCELLED, 0); // handle is closing
 			{
+				// One reader at a time, from the console session. A reader whose session
+				// left the console (user switch) is replaced; a new reader starts from the
+				// next event, not from stale history.
+				ULONG session = SharedUserData->ActiveConsoleId;
+				PFILE_OBJECT replaced = NULL;
+				BOOLEAN busy = FALSE;
 				KeAcquireSpinLock(&g_RingLock, &irql);
-				g_Head = g_Count = 0;
+				if (g_Reader != stack->FileObject)
+				{
+					if (g_Reader && g_ReaderSession == session)
+						busy = TRUE;
+					else
+					{
+						replaced = g_Reader;
+						g_Reader = stack->FileObject;
+						g_ReaderSession = session;
+						g_Head = g_Count = 0;
+					}
+				}
 				KeReleaseSpinLock(&g_RingLock, irql);
+				if (busy)
+					return CompleteRequest(irp, STATUS_SHARING_VIOLATION, 0);
+				if (replaced)
+					FailPendingReads(replaced, STATUS_CANCELLED);
 			}
-			else if (g_Reader != stack->FileObject)
-				return CompleteRequest(irp, STATUS_SHARING_VIOLATION, 0);
 			break;
 		default:
 			return CompleteRequest(irp, STATUS_INVALID_DEVICE_REQUEST, 0);
@@ -340,8 +366,8 @@ NTSTATUS DriverEntry(IN PDRIVER_OBJECT driverObject, IN PUNICODE_STRING registry
 void DriverUnload(IN PDRIVER_OBJECT driverObject)
 {
 	PAGED_CODE();
-
-	DebugPrint("DriverUnload(): driverObject = 0x%p", driverObject);
+	UNREFERENCED_PARAMETER(driverObject);
+	EngineShutdown();
 }
 
 NTSTATUS AddDevice(IN PDRIVER_OBJECT driverObject, IN PDEVICE_OBJECT pdo)
@@ -366,7 +392,6 @@ NTSTATUS AddDevice(IN PDRIVER_OBJECT driverObject, IN PDEVICE_OBJECT pdo)
 	do
 	{
 		IoInitializeRemoveLock(&fidoExt->RemoveLock, 0, 0, 0);
-		fidoExt->DeviceObject = fido;
 		fidoExt->Pdo = pdo;
 
 		//Add fido to the stack and propagate critical settings from the immediately lower device object
@@ -505,13 +530,12 @@ NTSTATUS DispatchPnp(IN PDEVICE_OBJECT fido, IN PIRP irp)
 		status = IoForwardIrpSynchronously(pdx->LowerDeviceObject, irp) ? irp->IoStatus.Status : STATUS_UNSUCCESSFUL;
 		if (NT_SUCCESS(status))
 		{
-			if (pdx->LowerDeviceObject->Characteristics & FILE_REMOVABLE_MEDIA)
-				fido->Characteristics |= FILE_REMOVABLE_MEDIA;
 			if (!pdx->Vhf)
 			{
-				NTSTATUS vhfStatus = EngineCreateVhf(fido, &pdx->Vhf);
+				VHFHANDLE vhf;
+				NTSTATUS vhfStatus = EngineCreateVhf(fido, &vhf);
 				if (NT_SUCCESS(vhfStatus))
-					EngineStart(pdx->Vhf);
+					EngineStart(pdx, vhf);
 				else
 					DebugPrint("DispatchPnp(): virtual HID device failed: 0x%x", vhfStatus);
 			}
@@ -522,17 +546,15 @@ NTSTATUS DispatchPnp(IN PDEVICE_OBJECT fido, IN PIRP irp)
 	}
 
 	if (fcn == IRP_MN_SURPRISE_REMOVAL)
-		EngineStop(pdx->Vhf);
+		EngineDetach(pdx, FALSE);
 
 	//Handle remove device specially in order to cleanup device stack
 	if (fcn == IRP_MN_REMOVE_DEVICE)
 	{
-		EngineStop(pdx->Vhf);
-		if (pdx->Vhf)
-		{
-			VhfDelete(pdx->Vhf, TRUE);
-			pdx->Vhf = NULL;
-		}
+		// After EngineDetach no report, timer or keyboard switch uses this VHF handle.
+		VHFHANDLE vhf = EngineDetach(pdx, TRUE);
+		if (vhf)
+			VhfDelete(vhf, TRUE);
 		IoSkipCurrentIrpStackLocation(irp);
 
 		status = IoCallDriver(pdx->LowerDeviceObject, irp);
@@ -609,7 +631,7 @@ NTSTATUS InternalIoctlComplete(PDEVICE_OBJECT device, PIRP irp, PVOID context)
             if (!report && transfer->TransferBufferMDL)
                 report = MmGetSystemAddressForMdlSafe(transfer->TransferBufferMDL, NormalPagePriority | MdlMappingNoExecute);
             if (report && report[0] == 1)
-                EngineProcessReport(report, extension->Vhf);
+                EngineProcessReport(report, extension);
         }
     }
 
@@ -625,16 +647,21 @@ static VOID BatteryWorker(PDEVICE_OBJECT fido, PVOID context)
     UNREFERENCED_PARAMETER(context);
     PDEVICE_EXTENSION extension = (PDEVICE_EXTENSION)fido->DeviceExtension;
     InterlockedExchange(&extension->BatteryQueued, 0);
-    LONG level = InterlockedCompareExchange(&extension->BatteryPending, 0, 0);
-    if (level != extension->BatteryShown)
+    // Write until the newest level is the one shown (a report may arrive during a write).
+    for (int attempts = 0; attempts < 4; ++attempts)
     {
+        LONG level = InterlockedCompareExchange(&extension->BatteryPending, 0, 0);
+        if (level == InterlockedCompareExchange(&extension->BatteryShown, 0, 0))
+            break;
         UCHAR value = (UCHAR)level;
         NTSTATUS status = IoSetDevicePropertyData(extension->Pdo, &DEVPKEY_OrchardBluetoothBattery, LOCALE_NEUTRAL, 0,
             DEVPROP_TYPE_BYTE, sizeof(value), &value);
-        if (NT_SUCCESS(status))
-            extension->BatteryShown = level;
-        else
+        if (!NT_SUCCESS(status))
+        {
             DebugPrint("BatteryWorker(): IoSetDevicePropertyData failed: 0x%x", status);
+            break;
+        }
+        InterlockedExchange(&extension->BatteryShown, level);
     }
     IoReleaseRemoveLock(&extension->RemoveLock, extension->BatteryWork);
 }
@@ -668,9 +695,8 @@ NTSTATUS BthComplete(PDEVICE_OBJECT device, PIRP irp, PVOID context)
 
     if (NT_SUCCESS(irp->IoStatus.Status) && transfer)
     {
-        // Bytes received: bthddi.h updates BufferSize for short transfers; take the larger
-        // reading of BufferSize and BufferSize - RemainingBufferSize, and only ever look at
-        // bytes inside the original buffer.
+        // Bytes received: bthddi.h updates BufferSize to the bytes read for short transfers,
+        // and it never exceeds the buffer, so reads stay inside it.
         ULONG length = transfer->BufferSize;
         UCHAR* data = NULL;
         if (length >= 2)
@@ -682,7 +708,7 @@ NTSTATUS BthComplete(PDEVICE_OBJECT device, PIRP irp, PVOID context)
         if (data && data[0] == 0xA1)
         {
             if (data[1] == 1 && length >= MAGICKB_REPORT_LENGTH + 1)
-                EngineProcessReport(data + 1, extension->Vhf);
+                EngineProcessReport(data + 1, extension);
             else if (data[1] == 0x90 && length >= 4)
                 NoteBattery(extension, data[3]); // [0xA1][0x90][status][charge]
         }

@@ -47,6 +47,9 @@ static BOOLEAN g_TimerRunning;
 static GESTURE g_Gesture[2];
 static BOOLEAN g_FnDown, g_LockDown;
 static USHORT g_PrevRow, g_ActionRow; // F1-F12 bit masks
+static USHORT g_Swallow; // row keys held across a profile change: hidden until released
+static UCHAR g_LastEvent[MAGICKB_REPORT_LENGTH]; // last report event sent to the reader
+static KEVENT g_ConfigGate; // serializes SET_CONFIG (save + apply) at PASSIVE_LEVEL
 static MAGICKB_ACTION g_Held[12]; // action started by each action-layer row key
 static UCHAR g_KeyMods, g_Keys[6]; // virtual keyboard state
 static USHORT g_Consumer[2];
@@ -149,13 +152,17 @@ static NTSTATUS OpenState(PHANDLE key, ACCESS_MASK access)
 static BOOLEAN LoadConfig(MAGICKB_CONFIG* config)
 {
 	UNICODE_STRING name = RTL_CONSTANT_STRING(L"Config");
-	UCHAR buffer[sizeof(KEY_VALUE_PARTIAL_INFORMATION) + sizeof(MAGICKB_CONFIG)];
-	PKEY_VALUE_PARTIAL_INFORMATION value = (PKEY_VALUE_PARTIAL_INFORMATION)buffer;
+	union
+	{
+		KEY_VALUE_PARTIAL_INFORMATION info;
+		UCHAR bytes[sizeof(KEY_VALUE_PARTIAL_INFORMATION) + sizeof(MAGICKB_CONFIG)];
+	} buffer;
+	PKEY_VALUE_PARTIAL_INFORMATION value = &buffer.info;
 	HANDLE key;
 	ULONG length;
 	if (!NT_SUCCESS(OpenState(&key, KEY_READ)))
 		return FALSE;
-	NTSTATUS status = ZwQueryValueKey(key, &name, KeyValuePartialInformation, buffer, sizeof(buffer), &length);
+	NTSTATUS status = ZwQueryValueKey(key, &name, KeyValuePartialInformation, &buffer, sizeof(buffer), &length);
 	ZwClose(key);
 	if (!NT_SUCCESS(status) || value->Type != REG_BINARY || value->DataLength != sizeof(MAGICKB_CONFIG))
 		return FALSE;
@@ -282,13 +289,31 @@ static void ActionUp(const MAGICKB_ACTION* a)
 		SubmitKeyboard(0, 0);
 		break;
 	case MAGICKB_ACTION_CONSUMER:
-		for (int i = 0; i < 2; ++i)
-			if (g_Consumer[i] == a->Usage)
-				g_Consumer[i] = 0;
+		// Same rebuild for consumer usages.
+		RtlZeroMemory(g_Consumer, sizeof(g_Consumer));
+		for (int i = 0; i < 12; ++i)
+		{
+			const MAGICKB_ACTION* held = &g_Held[i];
+			if (held == a || !(g_ActionRow & (1 << i)) || held->Type != MAGICKB_ACTION_CONSUMER)
+				continue;
+			for (int k = 0; k < 2; ++k)
+				if (!g_Consumer[k] || g_Consumer[k] == held->Usage)
+				{
+					g_Consumer[k] = held->Usage;
+					break;
+				}
+		}
 		SubmitConsumer();
 		break;
 	case MAGICKB_ACTION_SYSTEM:
-		g_System &= ~(UCHAR)(1 << (a->Usage - 0x81));
+		// And for system-control usages.
+		g_System = 0;
+		for (int i = 0; i < 12; ++i)
+		{
+			const MAGICKB_ACTION* held = &g_Held[i];
+			if (held != a && (g_ActionRow & (1 << i)) && held->Type == MAGICKB_ACTION_SYSTEM)
+				g_System |= (UCHAR)(1 << (held->Usage - 0x81));
+		}
 		SubmitSystem();
 		break;
 	}
@@ -407,10 +432,17 @@ static VOID TimerDpc(PKDPC dpc, PVOID context, PVOID arg1, PVOID arg2)
 // Releases everything the virtual device holds and forgets in-progress presses.
 static void ResetState(void)
 {
+	// Clear each bit before its release, so the rebuild in ActionUp never re-adds a key
+	// that is being released here.
 	for (int i = 0; i < 12; ++i)
-		if (g_ActionRow & (1 << i))
+	{
+		USHORT bit = (USHORT)(1 << i);
+		if (g_ActionRow & bit)
+		{
+			g_ActionRow &= ~bit;
 			ActionUp(&g_Held[i]);
-	g_ActionRow = 0;
+		}
+	}
 	RtlZeroMemory(g_Gesture, sizeof(g_Gesture));
 	g_KeyMods = 0;
 	RtlZeroMemory(g_Keys, sizeof(g_Keys));
@@ -428,6 +460,7 @@ void EngineInitialize(PDRIVER_OBJECT driverObject)
 	KeInitializeSpinLock(&g_EngineLock);
 	KeInitializeTimerEx(&g_Timer, NotificationTimer);
 	KeInitializeDpc(&g_TimerDpc, TimerDpc, NULL);
+	KeInitializeEvent(&g_ConfigGate, SynchronizationEvent, TRUE);
 	if (!LoadConfig(&g_Config))
 		DefaultConfig(&g_Config);
 }
@@ -452,41 +485,55 @@ NTSTATUS EngineCreateVhf(PDEVICE_OBJECT fido, VHFHANDLE* vhf)
 }
 
 // The engine drives one keyboard at a time: the one (USB or Bluetooth) whose report came
-// last. Starting a keyboard only claims the engine when no other keyboard holds it.
-void EngineStart(VHFHANDLE vhf)
+// last. A keyboard's virtual device (extension->Vhf) is only read under g_EngineLock, so
+// once EngineDetach returns no report, timer or switch can use it again.
+
+// Gives a started keyboard its virtual device, and the engine when no other keyboard
+// holds it.
+void EngineStart(PDEVICE_EXTENSION extension, VHFHANDLE vhf)
 {
 	KIRQL irql;
 	KeAcquireSpinLock(&g_EngineLock, &irql);
-	if (vhf && g_Vhf != vhf)
+	extension->Vhf = vhf;
+	extension->EngineDetached = FALSE;
+	if (!g_Vhf && extension->Vhf)
 	{
-		// Another keyboard (or none) held the engine: release what it held, then switch.
-		ResetState();
-		g_Vhf = vhf;
-		g_PrevRow = 0;
-	}
-	if (!g_Vhf)
-	{
-		g_Vhf = vhf;
-		g_PrevRow = 0;
+		g_Vhf = extension->Vhf;
+		g_PrevRow = g_Swallow = 0;
 		ResetState();
 	}
 	KeReleaseSpinLock(&g_EngineLock, irql);
 }
 
-// Must be called at PASSIVE_LEVEL; after it returns no timer DPC uses this VHF handle.
-// Stopping a keyboard that doesn't hold the engine leaves the other one running.
-void EngineStop(VHFHANDLE vhf)
+// PASSIVE_LEVEL. Stops the engine using this keyboard (surprise removal, removal); with
+// remove, also hands back its virtual device for VhfDelete. Another keyboard keeps running.
+VHFHANDLE EngineDetach(PDEVICE_EXTENSION extension, BOOLEAN remove)
 {
 	KIRQL irql;
+	VHFHANDLE vhf = NULL;
 	KeAcquireSpinLock(&g_EngineLock, &irql);
-	if (vhf && g_Vhf == vhf)
+	extension->EngineDetached = TRUE;
+	if (g_Vhf && g_Vhf == extension->Vhf)
 	{
 		ResetState();
 		g_Vhf = NULL;
 		KeCancelTimer(&g_Timer);
 		g_TimerRunning = FALSE;
 	}
+	if (remove)
+	{
+		vhf = extension->Vhf;
+		extension->Vhf = NULL;
+	}
 	KeReleaseSpinLock(&g_EngineLock, irql);
+	KeFlushQueuedDpcs(); // a timer DPC already running finishes with the handle first
+	return vhf;
+}
+
+// DriverUnload: no timer may outlive the driver image.
+void EngineShutdown(void)
+{
+	KeCancelTimer(&g_Timer);
 	KeFlushQueuedDpcs();
 }
 
@@ -502,41 +549,60 @@ NTSTATUS EngineSetConfig(const MAGICKB_CONFIG* config)
 {
 	if (!ValidConfig(config))
 		return STATUS_INVALID_PARAMETER;
-	// Persist first, so the active profile is always the saved one.
+	// Persist first, so the active profile is always the saved one; one change at a time,
+	// so two callers can't leave one profile saved and the other active.
+	KeWaitForSingleObject(&g_ConfigGate, Executive, KernelMode, FALSE, NULL);
 	NTSTATUS status = SaveConfig(config);
-	if (!NT_SUCCESS(status))
-		return status;
-	KIRQL irql;
-	KeAcquireSpinLock(&g_EngineLock, &irql);
-	ResetState();
-	g_Config = *config;
-	KeReleaseSpinLock(&g_EngineLock, irql);
-	return STATUS_SUCCESS;
+	if (NT_SUCCESS(status))
+	{
+		KIRQL irql;
+		KeAcquireSpinLock(&g_EngineLock, &irql);
+		ResetState();
+		g_Swallow |= g_PrevRow; // keys held now stay hidden until released, not re-pressed
+		g_Config = *config;
+		KeReleaseSpinLock(&g_EngineLock, irql);
+	}
+	KeSetEvent(&g_ConfigGate, IO_NO_INCREMENT, FALSE);
+	return status;
+}
+
+// Decides whether the reader gets this function-row view of a report: only when a reader
+// is connected and the view changed since the last one sent, so typing (stripped from
+// the view) produces no events and no timing. Called with g_EngineLock held.
+static BOOLEAN NewEvent(const UCHAR* view)
+{
+	if (!ReaderConnected())
+	{
+		RtlZeroMemory(g_LastEvent, sizeof(g_LastEvent));
+		return FALSE;
+	}
+	if (RtlCompareMemory(view, g_LastEvent, sizeof(g_LastEvent)) == sizeof(g_LastEvent))
+		return FALSE;
+	RtlCopyMemory(g_LastEvent, view, sizeof(g_LastEvent));
+	return TRUE;
 }
 
 // Called for every keyboard input report (ID 1) from a keyboard, USB or Bluetooth, in
-// place. vhf is that keyboard's virtual device.
-void EngineProcessReport(UCHAR* report, VHFHANDLE vhf)
+// place.
+void EngineProcessReport(UCHAR* report, PDEVICE_EXTENSION extension)
 {
 	// The tray app gets only what the function-row display needs: modifiers, F1-F12, Fn
 	// and Lock. Every other key is removed, so the event channel never carries typing.
-	UCHAR raw[MAGICKB_REPORT_LENGTH];
-	RtlCopyMemory(raw, report, sizeof(raw));
+	UCHAR view[MAGICKB_REPORT_LENGTH];
+	RtlCopyMemory(view, report, sizeof(view));
 	for (int i = 3; i < 9; ++i)
-		if (raw[i] < 0x3A || raw[i] > 0x45)
-			raw[i] = 0;
-	raw[9] &= 0x0A; // Fn and Lock only
+		if (view[i] < 0x3A || view[i] > 0x45)
+			view[i] = 0;
+	view[9] &= 0x0A; // Fn and Lock only
+
+	KIRQL irql;
+	KeAcquireSpinLock(&g_EngineLock, &irql);
 	// Remap Control / Option / Command first, so Windows and the action layer both see
 	// the remapped modifiers.
-	KIRQL irql;
-	UCHAR map[8];
-	KeAcquireSpinLock(&g_EngineLock, &irql);
-	RtlCopyMemory(map, g_Config.ModifierMap, sizeof(map));
-	KeReleaseSpinLock(&g_EngineLock, irql);
 	UCHAR mods = 0;
 	for (int i = 0; i < 8; ++i)
 		if (report[1] & (1 << i))
-			mods |= (UCHAR)(1 << (map[i] & 7));
+			mods |= (UCHAR)(1 << (g_Config.ModifierMap[i] & 7));
 	report[1] = mods;
 	BOOLEAN fn = (report[9] & 0x02) != 0;
 	BOOLEAN lock = (report[9] & 0x08) != 0;
@@ -551,20 +617,23 @@ void EngineProcessReport(UCHAR* report, VHFHANDLE vhf)
 			other = TRUE;
 	}
 
-	KeAcquireSpinLock(&g_EngineLock, &irql);
-	if (vhf && g_Vhf != vhf)
+	VHFHANDLE vhf = extension->EngineDetached ? NULL : extension->Vhf;
+	if (!vhf)
+	{
+		// This keyboard has no virtual device (or is going away): pass the report through
+		// and leave the engine to the other keyboard, if any.
+		BOOLEAN send = NewEvent(view);
+		KeReleaseSpinLock(&g_EngineLock, irql);
+		if (send)
+			PublishEvent(MAGICKB_EVENT_REPORT, 0, 0, view);
+		return;
+	}
+	if (g_Vhf != vhf)
 	{
 		// Another keyboard (or none) held the engine: release what it held, then switch.
 		ResetState();
 		g_Vhf = vhf;
-		g_PrevRow = 0;
-	}
-	if (!g_Vhf)
-	{
-		// No virtual device to carry actions: leave the report untouched.
-		KeReleaseSpinLock(&g_EngineLock, irql);
-		PublishEvent(MAGICKB_EVENT_REPORT, 0, 0, raw);
-		return;
+		g_PrevRow = g_Swallow = 0;
 	}
 	BOOLEAN actionLayer = (g_Config.Flags & MAGICKB_FLAG_ACTIONS_FIRST) ? !fn : fn;
 	USHORT pressed = row & ~g_PrevRow, released = g_PrevRow & ~row;
@@ -597,7 +666,7 @@ void EngineProcessReport(UCHAR* report, VHFHANDLE vhf)
 	for (int i = 3; i < 9; ++i)
 	{
 		UCHAR usage = report[i];
-		if (usage >= 0x3A && usage <= 0x45 && (g_ActionRow & (1 << (usage - 0x3A))))
+		if (usage >= 0x3A && usage <= 0x45 && ((g_ActionRow | g_Swallow) & (1 << (usage - 0x3A))))
 			continue;
 		if (usage)
 			keys[count++] = usage;
@@ -606,13 +675,16 @@ void EngineProcessReport(UCHAR* report, VHFHANDLE vhf)
 	report[9] &= ~0x08;
 
 	ULONG now = NowMs();
+	g_Swallow &= row; // released keys stop being hidden
 	g_PrevRow = row;
 	g_FnDown = fn;
 	g_LockDown = lock;
 	UpdateGesture(MAGICKB_GESTURE_LOCK, lock, FALSE, now);
 	UpdateGesture(MAGICKB_GESTURE_FN, fn, other || row != 0 || lock, now);
 	ArmTimer();
+	BOOLEAN send = NewEvent(view);
 	KeReleaseSpinLock(&g_EngineLock, irql);
 
-	PublishEvent(MAGICKB_EVENT_REPORT, 0, 0, raw);
+	if (send)
+		PublishEvent(MAGICKB_EVENT_REPORT, 0, 0, view);
 }

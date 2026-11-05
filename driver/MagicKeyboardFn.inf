@@ -8,7 +8,7 @@ Class       = HIDClass
 ClassGuid   = {745a17a0-74d3-11d0-b6fe-00a0c90f57da}
 Provider    = %Provider%
 CatalogFile = MagicKeyboardFn.cat
-DriverVer   = 11/05/2026,1.0.11.0
+DriverVer   = 11/05/2026,1.1.0.0
 PnpLockdown = 1
 
 [DestinationDirs]
@@ -71,8 +71,9 @@ Needs   = WINUSB.NT.Services
 ; Bluetooth: the in-box HidBth driver, with VHF and MagicKeyboardFn below it. The keyboard
 ; sends the same input report over Bluetooth, so the same filter maps it.
 [MagicKb_Bt.NT]
-Include   = hidbth.inf
-Needs     = HIDBTH_Inst.NT
+; Needs entries do not nest, so HID_Inst.NT (which HIDBTH_Inst.NT itself needs) is listed too.
+Include   = hidbth.inf, input.inf
+Needs     = HIDBTH_Inst.NT, HID_Inst.NT
 CopyFiles = MagicKb_Files
 AddReg    = MagicKb_Tray
 

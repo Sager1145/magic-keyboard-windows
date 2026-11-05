@@ -25,7 +25,7 @@ action with a fallback shortcut taps that shortcut instead when no tray app is r
 
 ## Build
 
-`Build.cmd` builds with the EWDK at `D:`. It writes `x64\Release\package`: the INF, the
+`Build.cmd` builds with the mounted EWDK (found on any drive, or set `EWDK`). It writes `x64\Release\package`: the INF, the
 SYS, the tray app and a catalog, all test-signed with the local WDK certificate, plus the
 public `.cer`. Run `..\Build-Package.ps1` to build the tray app first and produce the
 release assets.
