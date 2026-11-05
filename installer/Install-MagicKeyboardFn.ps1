@@ -8,7 +8,8 @@ $ErrorActionPreference='Stop'
 $root=$PSScriptRoot
 $inf=Join-Path $root 'driver\MagicKeyboardFn.inf'
 $cer=Join-Path $root 'driver\MagicKeyboardFn.cer'
-$hardwareId='USB\VID_05AC&PID_0320&MI_01'
+# Supported keyboards: 0320 USB-C Magic Keyboard, 0267 Magic Keyboard 2 (2015).
+$productIds=@('0320','0267')
 $appDir=Join-Path $env:ProgramFiles 'MagicKeyboardControls'
 $runKey='HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
 
@@ -102,22 +103,26 @@ foreach($store in 'Root','TrustedPublisher'){
 # 3. Stage the package and bind it to any connected keyboard
 & pnputil.exe /add-driver $inf | Out-Host
 if($LASTEXITCODE -and $LASTEXITCODE -ne 3010){throw "pnputil /add-driver returned $LASTEXITCODE."}
-$connected=Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object InstanceId -like "$hardwareId\*"
+$connected=$false
 $reboot=$false
-if($connected){
-    $reboot=[MagicKbSetup]::Force($hardwareId,$inf)
-    # Interface 0 (battery report) gets the Windows HID driver from the same package.
-    $aux='USB\VID_05AC&PID_0320&MI_00'
-    if(Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object InstanceId -like "$aux\*"){
-        try{if([MagicKbSetup]::Force($aux,$inf)){$reboot=$true}}catch{"Battery interface not updated: $_"}
+foreach($productId in $productIds){
+    $hardwareId="USB\VID_05AC&PID_$productId&MI_01"
+    if(Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object InstanceId -like "$hardwareId\*"){
+        if([MagicKbSetup]::Force($hardwareId,$inf)){$reboot=$true}
+        $connected=$true
+        # Interface 0 (battery report) gets WinUSB from the same package.
+        $aux="USB\VID_05AC&PID_$productId&MI_00"
+        if(Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object InstanceId -like "$aux\*"){
+            try{if([MagicKbSetup]::Force($aux,$inf)){$reboot=$true}}catch{"Battery interface not updated: $_"}
+        }
     }
-}
-# The same keyboard paired over Bluetooth.
-$bluetoothId='BTHENUM\{00001124-0000-1000-8000-00805f9b34fb}_VID&0001004c_PID&0320'
-$paired=Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object InstanceId -like 'BTHENUM\{00001124-0000-1000-8000-00805F9B34FB}_VID&0001004C_PID&0320\*'
-if($paired){
-    try{if([MagicKbSetup]::Force($bluetoothId,$inf)){$reboot=$true}}catch{"Bluetooth connection not updated: $_"}
-    $connected=$true
+    # The same keyboard paired over Bluetooth.
+    $bluetoothId="BTHENUM\{00001124-0000-1000-8000-00805f9b34fb}_VID&0001004c_PID&$productId"
+    $paired=Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object InstanceId -like "BTHENUM\{00001124-0000-1000-8000-00805F9B34FB}_VID&0001004C_PID&$productId\*"
+    if($paired){
+        try{if([MagicKbSetup]::Force($bluetoothId,$inf)){$reboot=$true}}catch{"Bluetooth connection not updated: $_"}
+        $connected=$true
+    }
 }
 # A copy left by the earlier manual install is no longer used.
 Remove-Item -LiteralPath (Join-Path $env:windir 'System32\drivers\MagicKeyboardFn.sys') -ErrorAction SilentlyContinue
@@ -142,7 +147,7 @@ if($app){
 #    device so the new driver loads now; if Windows refuses, a restart is required.
 if($reboot){
     $restarted=$true
-    $keyboards=Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like 'USB\VID_05AC&PID_0320&MI_0*' -or $_.InstanceId -like 'BTHENUM\{00001124-0000-1000-8000-00805F9B34FB}_VID&0001004C_PID&0320\*' }
+    $keyboards=Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $id=$_.InstanceId; $productIds | Where-Object { $id -like "USB\VID_05AC&PID_$_&MI_0*" -or $id -like "BTHENUM\{00001124-0000-1000-8000-00805F9B34FB}_VID&0001004C_PID&$_\*" } }
     foreach($device in $keyboards){
         & pnputil.exe /restart-device $device.InstanceId | Out-Null
         if($LASTEXITCODE){$restarted=$false}
@@ -156,7 +161,7 @@ elseif($connected){
     if($tray -match '^"([^"]+)"'){Start-Process explorer.exe -ArgumentList "`"$($Matches[1])`""}
 }
 
-if(-not $connected){'Driver staged. Connect the USB-C Magic Keyboard, then rerun this script to bind it.'}
+if(-not $connected){'Driver staged. Connect the Magic Keyboard (USB-C model or Magic Keyboard 2), then rerun this script to bind it.'}
 elseif($reboot){
     'Driver installed. Restart Windows to finish: the previous version stays loaded until then.'
     Confirm-Restart 'Restart Windows now? Save your work first.'

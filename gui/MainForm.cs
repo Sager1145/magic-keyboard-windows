@@ -373,11 +373,11 @@ namespace MagicKeyboard {
    string link=null;
    try{link=Battery.Link();}catch(Exception){}
    // The chip names the connection; the driver maps keys the same way over both.
-   string name=link=="bluetooth"?"Bluetooth":"USB-C";
+   string name=link=="bluetooth"?"Bluetooth":"USB";
    if(link==null && !driver)SetPill(driverPill,false,"Keyboard not connected");
    else SetPill(driverPill,driver,driver?name+" connected":name+" · driver not running");
    string why=link==null && !driver?"":driver
-    ?(link=="bluetooth"?"Connected over Bluetooth.":"Connected with the USB-C cable.")+" The Orchard Keys driver is mapping keys."
+    ?(link=="bluetooth"?"Connected over Bluetooth.":"Connected with the cable.")+" The Orchard Keys driver is mapping keys."
     :"The keyboard is connected but the Orchard Keys driver isn't running on this connection. Reconnect the keyboard or restart Windows.";
    if(chipTips.GetToolTip(driverPill)!=why)chipTips.SetToolTip(driverPill,why);
    bool tray=AgentWindow.Running();

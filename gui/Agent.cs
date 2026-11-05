@@ -133,7 +133,7 @@ namespace MagicKeyboard {
    if(tray!=null)tray.Text=r.Valid?Theme.ProductName+" · battery "+r:Theme.ProductName;
    if(r.Valid && !r.Charging && r.Percent<=10 && !lowWarned && tray!=null){
     lowWarned=true;
-    tray.ShowBalloonTip(8000,"Magic Keyboard battery low",r.Percent+"% left. Connect the USB-C cable to charge.",ToolTipIcon.Warning);
+    tray.ShowBalloonTip(8000,"Magic Keyboard battery low",r.Percent+"% left. Connect the cable to charge.",ToolTipIcon.Warning);
    }
    if(r.Valid && (r.Charging || r.Percent>15))lowWarned=false;
    if(changed)WriteStatus();
@@ -181,7 +181,9 @@ namespace MagicKeyboard {
   static bool IsKeyboard(string device){
    if(device==null)return false;
    string d=device.ToUpperInvariant();
-   return (d.Contains("VID_05AC&PID_0320") || d.Contains("004C_PID&0320"));
+   // 0320 USB-C Magic Keyboard, 0267 Magic Keyboard 2 (2015)
+   return d.Contains("VID_05AC&PID_0320") || d.Contains("004C_PID&0320") ||
+          d.Contains("VID_05AC&PID_0267") || d.Contains("004C_PID&0267");
   }
   protected override void WndProc(ref Message message){
    if(message.Msg==0x219 && message.LParam!=IntPtr.Zero &&

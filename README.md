@@ -8,8 +8,10 @@ A small kernel driver does the mapping, so the keys work as soon as it's install
 sign-in screen, in every app and without the settings app running. The settings app, in
 the system tray, is for customizing.
 
-- **Keyboard:** Apple Magic Keyboard with USB-C (USB `05AC:0320`, Bluetooth `004C:0320`).
-  The Touch ID and numeric-keypad models aren't supported yet.
+- **Keyboard:** Apple Magic Keyboard with USB-C (USB `05AC:0320`, Bluetooth `004C:0320`)
+  and Magic Keyboard 2 (2015, A1644; USB `05AC:0267`, Bluetooth `004C:0267`). On the Magic
+  Keyboard 2, the **Eject** key does the Lock key's job. The Touch ID and numeric-keypad
+  models aren't supported yet.
 - **Windows:** Windows 10 or 11, 64-bit (x64).
 - **Latest version:** [Releases](https://github.com/Sager1145/magic-keyboard-windows/releases).
 

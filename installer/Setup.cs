@@ -18,8 +18,12 @@ namespace MagicKeyboardSetup {
  // as embedded resources and installs them like installer\Install-MagicKeyboardFn.ps1.
  sealed class SetupForm:Form {
   static readonly string[] Files={"MagicKeyboardFn.inf","MagicKeyboardFn.sys","magickeyboardfn.cat","MagicKeyboardFn.cer","MagicKeyboardControls.exe"};
-  const string HardwareId=@"USB\VID_05AC&PID_0320&MI_01",AuxHardwareId=@"USB\VID_05AC&PID_0320&MI_00";
-  const string BluetoothId=@"BTHENUM\{00001124-0000-1000-8000-00805f9b34fb}_VID&0001004c_PID&0320";
+  // Supported keyboards: 0320 USB-C Magic Keyboard, 0267 Magic Keyboard 2 (2015).
+  static readonly string[] ProductIds={"0320","0267"};
+  static string HardwareId(string pid){return @"USB\VID_05AC&PID_"+pid+"&MI_01";}
+  static string AuxHardwareId(string pid){return @"USB\VID_05AC&PID_"+pid+"&MI_00";}
+  static string BluetoothId(string pid){return @"BTHENUM\{00001124-0000-1000-8000-00805f9b34fb}_VID&0001004c_PID&"+pid;}
+  static string ModelName(string pid){return pid=="0267"?"Magic Keyboard 2":"keyboard";}
   const string RunKey=@"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
   readonly TextBox log;readonly Button install,uninstall;readonly Label headline;
 
@@ -40,7 +44,7 @@ namespace MagicKeyboardSetup {
    Controls.Add(page);
    page.Controls.Add(new Label{Text="Orchard Keys",AutoSize=true,Font=new Font("Segoe UI",18,FontStyle.Bold)},0,0);
    headline=new Label{AutoSize=true,ForeColor=muted,MaximumSize=new Size(560,0),Margin=new Padding(3,4,3,12),
-    Text="Installs the Fn / function-row driver for the USB-C Magic Keyboard (05AC:0320) and the settings tray. The driver is test-signed: Windows test signing must be on, which needs Secure Boot off."};
+    Text="Installs the Fn / function-row driver for the USB-C Magic Keyboard (05AC:0320) and the Magic Keyboard 2 (05AC:0267), and the settings tray. The driver is test-signed: Windows test signing must be on, which needs Secure Boot off."};
    page.Controls.Add(headline,0,1);
    log=new TextBox{Dock=DockStyle.Fill,Multiline=true,ReadOnly=true,ScrollBars=ScrollBars.Vertical,BorderStyle=BorderStyle.None,BackColor=card,ForeColor=ink,Font=new Font("Consolas",9)};
    page.Controls.Add(log,0,2);
@@ -135,18 +139,21 @@ namespace MagicKeyboardSetup {
    if(exit!=0 && exit!=3010)throw new InvalidOperationException("pnputil /add-driver failed ("+exit+"):\r\n"+output);
    Log("Added the driver package to Windows.");
 
-   bool reboot=false;
-   if(UpdateDriverForPlugAndPlayDevices(IntPtr.Zero,HardwareId,inf,1,out reboot))Log("Installed the driver on the connected keyboard.");
-   else{
-    int error=Marshal.GetLastWin32Error();
-    if(error==unchecked((int)0xE000020B))Log("No keyboard connected. The driver installs automatically when you connect it.");
-    else throw new Win32Exception(error);
+   bool reboot=false,any=false;
+   foreach(string pid in ProductIds){
+    bool usbReboot;
+    if(UpdateDriverForPlugAndPlayDevices(IntPtr.Zero,HardwareId(pid),inf,1,out usbReboot)){reboot|=usbReboot;any=true;Log("Installed the driver on the connected "+ModelName(pid)+".");}
+    else{
+     int error=Marshal.GetLastWin32Error();
+     if(error!=unchecked((int)0xE000020B))throw new Win32Exception(error);
+    }
+    // Interface 0 carries the battery report; it gets WinUSB from the same package.
+    bool auxReboot;
+    if(UpdateDriverForPlugAndPlayDevices(IntPtr.Zero,AuxHardwareId(pid),inf,1,out auxReboot)){reboot|=auxReboot;Log("Enabled the "+ModelName(pid)+"'s battery reporting.");}
+    bool btReboot;
+    if(UpdateDriverForPlugAndPlayDevices(IntPtr.Zero,BluetoothId(pid),inf,1,out btReboot)){reboot|=btReboot;any=true;Log("Installed the driver on the "+ModelName(pid)+"'s Bluetooth connection.");}
    }
-   // Interface 0 carries the battery report; it gets the Windows HID driver from the same package.
-   bool auxReboot;
-   if(UpdateDriverForPlugAndPlayDevices(IntPtr.Zero,AuxHardwareId,inf,1,out auxReboot)){reboot|=auxReboot;Log("Enabled the keyboard's battery reporting.");}
-   bool btReboot;
-   if(UpdateDriverForPlugAndPlayDevices(IntPtr.Zero,BluetoothId,inf,1,out btReboot)){reboot|=btReboot;Log("Installed the driver on the Bluetooth connection.");}
+   if(!any)Log("No keyboard connected. The driver installs automatically when you connect it.");
    try{Directory.Delete(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"MagicKeyboardControls"),true);}catch(Exception){}
    // Start menu entry "Orchard Keys", pointing at this version (driver store paths change per version).
    try{
@@ -220,7 +227,7 @@ namespace MagicKeyboardSetup {
   // device loads the new one; false if Windows refuses, which means a restart is needed.
   static bool RestartKeyboards(){
    int exit;string list=Exec("pnputil.exe","/enum-devices /connected",out exit);
-   var ids=Regex.Matches(list,@"(USB\\VID_05AC&PID_0320&MI_0\d\\\S+|BTHENUM\\\{00001124-0000-1000-8000-00805F9B34FB\}_VID&0001004C_PID&0320\\\S+)",RegexOptions.IgnoreCase)
+   var ids=Regex.Matches(list,@"(USB\\VID_05AC&PID_(0320|0267)&MI_0\d\\\S+|BTHENUM\\\{00001124-0000-1000-8000-00805F9B34FB\}_VID&0001004C_PID&(0320|0267)\\\S+)",RegexOptions.IgnoreCase)
     .Cast<Match>().Select(m=>m.Value).Distinct().ToList();
    if(ids.Count==0)return false;
    bool all=true;

@@ -34,12 +34,13 @@ namespace MagicKeyboard {
 
   // How the keyboard is connected: "usb", "bluetooth", or null when it isn't. USB wins
   // when both are up (the keyboard types over the cable then). Matches the USB-C Magic
-  // Keyboard family: 0320, 0321 (Touch ID), 0322 (numeric keypad).
+  // Keyboard family: 0320, 0321 (Touch ID), 0322 (numeric keypad), and the Magic Keyboard 2
+  // (2015): 0267.
   public static string Link(){
    bool bluetooth=false;
    foreach(string path in ApplePaths()){
     string lower=path.ToLowerInvariant();
-    foreach(string pid in new[]{"0320","0321","0322"}){
+    foreach(string pid in new[]{"0320","0321","0322","0267"}){
      if(lower.Contains("vid_05ac&pid_"+pid))return "usb";
      if(lower.Contains("004c_pid&"+pid))bluetooth=true;
     }

@@ -1,5 +1,6 @@
 Orchard Keys: Fn, function row, modifiers and battery for the USB-C Magic Keyboard
-(USB 05AC:0320 or Bluetooth), Windows 10/11 x64.
+(USB 05AC:0320 or Bluetooth) and the Magic Keyboard 2 (USB 05AC:0267 or Bluetooth),
+Windows 10/11 x64.
 https://github.com/Sager1145/magic-keyboard-windows
 
 SIGNING

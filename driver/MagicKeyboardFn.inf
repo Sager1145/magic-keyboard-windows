@@ -1,4 +1,5 @@
-; MagicKeyboardFn (Orchard Keys): function-row, Fn and Lock mapping for the USB-C Apple Magic Keyboard.
+; MagicKeyboardFn (Orchard Keys): function-row, Fn and Lock mapping for the USB-C Apple Magic Keyboard
+; (05AC:0320) and the Magic Keyboard 2 (2015, A1644, 05AC:0267).
 ; Installs HidUsb from input.inf with VHF and MagicKeyboardFn as lower filters, plus the
 ; settings tray app, which starts at sign-in from the driver store.
 
@@ -28,6 +29,10 @@ MagicKeyboardControls.exe = 1
 %DeviceDesc% = MagicKb_Inst, USB\VID_05AC&PID_0320&MI_01
 %AuxDesc%    = MagicKb_Aux, USB\VID_05AC&PID_0320&MI_00
 %BtDesc%     = MagicKb_Bt, BTHENUM\{00001124-0000-1000-8000-00805f9b34fb}_VID&0001004c_PID&0320
+; Magic Keyboard 2 (2015): the same reports, with Eject (byte 9 bit 0) in the place of Lock
+%DeviceDesc2% = MagicKb_Inst, USB\VID_05AC&PID_0267&MI_01
+%AuxDesc2%    = MagicKb_Aux, USB\VID_05AC&PID_0267&MI_00
+%BtDesc2%     = MagicKb_Bt, BTHENUM\{00001124-0000-1000-8000-00805f9b34fb}_VID&0001004c_PID&0267
 
 [MagicKb_Inst.NT]
 Include   = input.inf
@@ -105,5 +110,8 @@ Manufacturer = "Apple Inc."
 DeviceDesc   = "Orchard Keys Magic Keyboard (USB-C)"
 AuxDesc      = "Orchard Keys Magic Keyboard Battery (USB-C)"
 BtDesc       = "Orchard Keys Magic Keyboard (Bluetooth)"
+DeviceDesc2  = "Orchard Keys Magic Keyboard 2"
+AuxDesc2     = "Orchard Keys Magic Keyboard 2 Battery"
+BtDesc2      = "Orchard Keys Magic Keyboard 2 (Bluetooth)"
 ServiceDesc  = "Orchard Keys Fn mapping filter"
 DiskName     = "Orchard Keys driver disk"

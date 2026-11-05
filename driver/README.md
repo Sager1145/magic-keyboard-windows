@@ -1,13 +1,19 @@
 # MagicKeyboardFn driver
 
-A WDM lower filter for the USB interface `USB\VID_05AC&PID_0320&MI_01`, installed
-together with Windows' in-box `vhf` (Virtual HID Framework) filter and `HidUsb`.
+A WDM lower filter for the USB interface `USB\VID_05AC&PID_0320&MI_01` (USB-C Magic
+Keyboard) and `USB\VID_05AC&PID_0267&MI_01` (Magic Keyboard 2, 2015), and for their
+Bluetooth connections, installed together with Windows' in-box `vhf` (Virtual HID Framework)
+filter and `HidUsb` (or `HidBth`). Both models send the same 10-byte report. The only
+difference is the top-right key in byte 9: Lock is bit 3 on the USB-C model and Eject is
+bit 0 on the Magic Keyboard 2. `AddDevice` picks the right bit from the hardware ID
+(`DEVICE_EXTENSION.LockMask`), so Eject works as the Lock key.
 
 - `Driver.c`: filter plumbing, the `\\.\MagicKeyboardFn` control device, the event ring for
   the tray app, IOCTLs and VHF start/stop. The WDM skeleton started from
   [WinAppleKey](https://github.com/samartzidis/WinAppleKey) (MIT).
 - `Mapping.c`: the mapping engine. For each keyboard input report (ID 1) it:
-  - finds the function-row keys, Fn (byte 9 bit 1) and Lock (byte 9 bit 3),
+  - finds the function-row keys, Fn (byte 9 bit 1) and Lock (byte 9 bit 3, or Eject at
+    bit 0 on the Magic Keyboard 2),
   - removes action-layer keys and Lock from the report in place,
   - emits the mapped action through a virtual HID device with three reports: keyboard (1),
     consumer control (2), system control (3),

@@ -1,11 +1,13 @@
 #include "Driver.h"
 #include <initguid.h> // instantiates GUID_MAGICKB_CONTROL below, in this file only
 DRIVER_ADD_DEVICE AddDevice;
+static UCHAR GetLockMask(PDEVICE_OBJECT pdo);
 
 #ifdef ALLOC_PRAGMA
 	#pragma alloc_text (INIT, DriverEntry)
 	#pragma alloc_text (PAGE, DriverUnload)
 	#pragma alloc_text (PAGE, AddDevice)
+	#pragma alloc_text (PAGE, GetLockMask)
 	#pragma alloc_text (PAGE, RemoveDevice)
 	#pragma alloc_text (PAGE, GetLowerDeviceType)
 #endif // ALLOC_PRAGMA
@@ -370,6 +372,33 @@ void DriverUnload(IN PDRIVER_OBJECT driverObject)
 	EngineShutdown();
 }
 
+// Byte 9 of the keyboard report holds the top-right key. The USB-C Magic Keyboard (0320)
+// has Lock there (bit 3). The Magic Keyboard 2 (2015, A1644: USB 05AC:0267, Bluetooth
+// 004C:0267) has Eject there instead and reports it as bit 0. Fn is bit 1 on both.
+static UCHAR GetLockMask(PDEVICE_OBJECT pdo)
+{
+	PAGED_CODE();
+
+	// Hardware IDs, e.g. USB\VID_05AC&PID_0267&REV_0098&MI_01 or
+	// BTHENUM\{00001124-0000-1000-8000-00805f9b34fb}_VID&0001004c_PID&0267 (REG_MULTI_SZ).
+	WCHAR ids[512];
+	ULONG length = 0;
+	RtlZeroMemory(ids, sizeof(ids));
+	NTSTATUS status = IoGetDeviceProperty(pdo, DevicePropertyHardwareID, sizeof(ids) - 2 * sizeof(WCHAR), ids, &length);
+	if (!NT_SUCCESS(status))
+	{
+		DebugPrint("GetLockMask(): IoGetDeviceProperty failed: 0x%x", status);
+		return 0x08;
+	}
+	for (ULONG i = 0; i < ARRAYSIZE(ids); ++i)
+		if (ids[i] >= L'a' && ids[i] <= L'z')
+			ids[i] = (WCHAR)(ids[i] - L'a' + L'A');
+	for (PWCHAR id = ids; *id; id += wcslen(id) + 1)
+		if (wcsstr(id, L"VID_05AC&PID_0267") || wcsstr(id, L"004C_PID&0267"))
+			return 0x01;
+	return 0x08;
+}
+
 NTSTATUS AddDevice(IN PDRIVER_OBJECT driverObject, IN PDEVICE_OBJECT pdo)
 {
 	PAGED_CODE();
@@ -393,6 +422,7 @@ NTSTATUS AddDevice(IN PDRIVER_OBJECT driverObject, IN PDEVICE_OBJECT pdo)
 	{
 		IoInitializeRemoveLock(&fidoExt->RemoveLock, 0, 0, 0);
 		fidoExt->Pdo = pdo;
+		fidoExt->LockMask = GetLockMask(pdo);
 
 		//Add fido to the stack and propagate critical settings from the immediately lower device object
 		PDEVICE_OBJECT fdo = IoAttachDeviceToDeviceStack(fido, pdo);

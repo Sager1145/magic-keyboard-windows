@@ -588,12 +588,15 @@ void EngineProcessReport(UCHAR* report, PDEVICE_EXTENSION extension)
 {
 	// The tray app gets only what the function-row display needs: modifiers, F1-F12, Fn
 	// and Lock. Every other key is removed, so the event channel never carries typing.
+	// The top-right key (Lock, or Eject on the Magic Keyboard 2) is the Lock key here and,
+	// for the tray app, always bit 3.
+	UCHAR lockMask = extension->LockMask ? extension->LockMask : 0x08;
 	UCHAR view[MAGICKB_REPORT_LENGTH];
 	RtlCopyMemory(view, report, sizeof(view));
 	for (int i = 3; i < 9; ++i)
 		if (view[i] < 0x3A || view[i] > 0x45)
 			view[i] = 0;
-	view[9] &= 0x0A; // Fn and Lock only
+	view[9] = (UCHAR)((report[9] & 0x02) | ((report[9] & lockMask) ? 0x08 : 0)); // Fn and Lock only
 
 	KIRQL irql;
 	KeAcquireSpinLock(&g_EngineLock, &irql);
@@ -605,8 +608,8 @@ void EngineProcessReport(UCHAR* report, PDEVICE_EXTENSION extension)
 			mods |= (UCHAR)(1 << (g_Config.ModifierMap[i] & 7));
 	report[1] = mods;
 	BOOLEAN fn = (report[9] & 0x02) != 0;
-	BOOLEAN lock = (report[9] & 0x08) != 0;
-	BOOLEAN other = report[1] != 0 || (report[9] & 0x05) != 0;
+	BOOLEAN lock = (report[9] & lockMask) != 0;
+	BOOLEAN other = report[1] != 0 || (report[9] & 0x0D & ~lockMask) != 0;
 	USHORT row = 0;
 	for (int i = 3; i < 9; ++i)
 	{
@@ -660,7 +663,7 @@ void EngineProcessReport(UCHAR* report, PDEVICE_EXTENSION extension)
 	}
 
 	// Remove action-layer keys from the keyboard's own report and hide Lock
-	// (AL Terminal Lock) from Windows; the engine owns both.
+	// (AL Terminal Lock, or Eject on the Magic Keyboard 2) from Windows; the engine owns both.
 	UCHAR keys[6] = { 0 };
 	int count = 0;
 	for (int i = 3; i < 9; ++i)
@@ -672,7 +675,7 @@ void EngineProcessReport(UCHAR* report, PDEVICE_EXTENSION extension)
 			keys[count++] = usage;
 	}
 	RtlCopyMemory(&report[3], keys, sizeof(keys));
-	report[9] &= ~0x08;
+	report[9] &= (UCHAR)~lockMask;
 
 	ULONG now = NowMs();
 	g_Swallow &= row; // released keys stop being hidden

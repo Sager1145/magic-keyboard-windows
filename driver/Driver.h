@@ -99,6 +99,7 @@ extern "C" {
 		IO_REMOVE_LOCK RemoveLock;
 		VHFHANDLE Vhf; // virtual HID device that carries the mapped actions (engine lock)
 		BOOLEAN EngineDetached; // removal started: reports pass through, Vhf is not used
+		UCHAR LockMask; // byte 9 bit of the top-right key: 0x08 Lock (0320), 0x01 Eject (0267)
 		// Bluetooth battery level shown by Windows (DEVPKEY_Bluetooth_Battery on the PDO).
 		PIO_WORKITEM BatteryWork; // writes the property at PASSIVE_LEVEL
 		LONG BatteryShown; // level last written, 0 = none
