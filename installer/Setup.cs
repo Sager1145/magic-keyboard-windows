@@ -66,22 +66,50 @@ namespace MagicKeyboardSetup {
   static bool TestSigning(){int exit;return Regex.IsMatch(Exec("bcdedit.exe","/enum {current}",out exit),@"(?mi)^testsigning\s+Yes");}
   static bool SecureBoot(){try{object v=Registry.GetValue(@"HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\SecureBoot\State","UEFISecureBootEnabled",0);return v is int && (int)v==1;}catch(Exception){return false;}}
 
+  bool Ask(string text){return (DialogResult)Invoke((Func<DialogResult>)(()=>MessageBox.Show(this,text,"Orchard Keys Setup",MessageBoxButtons.YesNo,MessageBoxIcon.Question)))==DialogResult.Yes;}
+  static void Restart(string arguments){int code;Exec("shutdown.exe",arguments,out code);}
+
+  // Setup finishes the install by itself after the restart test signing needs: a copy in an
+  // admin-only folder runs once at the next sign-in with /resume.
+  const string RunOnceKey=@"SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce";
+  static void ResumeAfterRestart(){
+   string folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"OrchardKeys");
+   Directory.CreateDirectory(folder,AdminOnly());
+   string copy=Path.Combine(folder,"OrchardKeysSetup.exe");
+   File.Copy(Application.ExecutablePath,copy,true);
+   using(RegistryKey once=Registry.LocalMachine.CreateSubKey(RunOnceKey))once.SetValue("OrchardKeysSetup","\""+copy+"\" /resume");
+  }
+  static DirectorySecurity AdminOnly(){
+   DirectorySecurity acl=new DirectorySecurity();
+   acl.SetAccessRuleProtection(true,false);
+   foreach(WellKnownSidType sid in new[]{WellKnownSidType.BuiltinAdministratorsSid,WellKnownSidType.LocalSystemSid})
+    acl.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(sid,null),FileSystemRights.FullControl,InheritanceFlags.ContainerInherit|InheritanceFlags.ObjectInherit,PropagationFlags.None,AccessControlType.Allow));
+   return acl;
+  }
+
   void Install(){
    if(!TestSigning()){
-    if(SecureBoot()){Log("Secure Boot is on, so Windows won't load a test-signed driver. Turn Secure Boot off in your PC's firmware settings, then run Setup again.");return;}
-    if((DialogResult)Invoke((Func<DialogResult>)(()=>MessageBox.Show(this,"Windows test signing is off. Turn it on now? You'll need to restart Windows and run Setup again.","Orchard Keys Setup",MessageBoxButtons.OKCancel,MessageBoxIcon.Question)))!=DialogResult.OK){Log("Cancelled: test signing is required.");return;}
+    if(SecureBoot()){
+     // Secure Boot locks test signing off; only the PC's firmware settings can change it.
+     Log("Secure Boot is on, so Windows can't load a test-signed driver.");
+     Log("Turn Secure Boot off in your PC's firmware (UEFI) settings, usually under Security or Boot, save, and start Windows. Then run Setup again.");
+     if(Ask("Secure Boot is on, so this driver can't load.\n\nRestart into your PC's firmware settings now to turn Secure Boot off?\n\nSave your work first."))
+     {Log("Restarting into the firmware settings...");Restart("/r /fw /t 5");}
+     return;
+    }
+    if(!Ask("Windows test signing is off. The driver is test-signed, so Windows loads it only with test signing on.\n\nTurn it on now? Setup will finish the install after Windows restarts.")){Log("Cancelled: test signing is required.");return;}
     int code;Log(Exec("bcdedit.exe","/set testsigning on",out code).Trim());
-    Log(code==0?"Test signing turned on. Restart Windows, then run Setup again.":"bcdedit failed ("+code+").");
+    if(code!=0){Log("bcdedit failed ("+code+").");return;}
+    ResumeAfterRestart();
+    Log("Test signing turned on. Setup finishes the install after Windows restarts.");
+    if(Ask("Restart Windows now to finish installing?\n\nSave your work first.")){Log("Restarting...");Restart("/r /t 5");}
+    else Log("Restart Windows when you're ready; Setup continues after you sign in.");
     return;
    }
    // Extract into a new folder only administrators and SYSTEM can write, so nothing else
    // can swap the package between extraction and installation.
    string folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"OrchardKeysSetup-"+Guid.NewGuid().ToString("N"));
-   DirectorySecurity acl=new DirectorySecurity();
-   acl.SetAccessRuleProtection(true,false);
-   foreach(WellKnownSidType sid in new[]{WellKnownSidType.BuiltinAdministratorsSid,WellKnownSidType.LocalSystemSid})
-    acl.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(sid,null),FileSystemRights.FullControl,InheritanceFlags.ContainerInherit|InheritanceFlags.ObjectInherit,PropagationFlags.None,AccessControlType.Allow));
-   Directory.CreateDirectory(folder,acl);
+   Directory.CreateDirectory(folder,AdminOnly());
    try{InstallFrom(folder);}
    finally{try{Directory.Delete(folder,true);}catch(Exception){}}
   }
@@ -120,8 +148,18 @@ namespace MagicKeyboardSetup {
    bool btReboot;
    if(UpdateDriverForPlugAndPlayDevices(IntPtr.Zero,BluetoothId,inf,1,out btReboot)){reboot|=btReboot;Log("Installed the driver on the Bluetooth connection.");}
    try{Directory.Delete(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"MagicKeyboardControls"),true);}catch(Exception){}
+   // Start menu entry "Orchard Keys", pointing at this version (driver store paths change per version).
+   try{
+    string app=InstalledApp(Resource("MagicKeyboardControls.exe"));
+    if(app!=null){CreateShortcut(app);Log("Added Orchard Keys to the Start menu.");}
+   }catch(Exception e){Log("Start menu entry not added: "+e.Message);}
    if(reboot && RestartKeyboards()){reboot=false;Log("Restarted the keyboard so the new driver is loaded.");}
-   if(reboot)Log("Restart Windows to finish: the previous version stays loaded until then.");
+   if(reboot){
+    Log("Restart Windows to finish: the previous version stays loaded until then.");
+    if(Ask("Windows needs a restart to load the new driver (the previous version is still in use).\n\nRestart now?\n\nSave your work first.")){Log("Restarting...");Restart("/r /t 5");}
+    return;
+   }
+   if(!DriverRunning(InstalledApp(Resource("MagicKeyboardControls.exe")))) Log("The driver isn't running yet: connect the keyboard (cable or Bluetooth), or restart Windows.");
    else{
     Log("Done. Default mappings are active now.");
     string tray=Registry.GetValue(@"HKEY_LOCAL_MACHINE\"+RunKey,"MagicKeyboardControls",null) as string;
@@ -129,6 +167,52 @@ namespace MagicKeyboardSetup {
     // explorer.exe starts it as the signed-in user, not elevated.
     if(path.Success)Process.Start("explorer.exe","\""+path.Groups[1].Value+"\"");
    }
+  }
+
+  // TRUE when the loaded MagicKeyboardFn.sys is the one from this package's driver store folder.
+  [DllImport("ntdll.dll")] static extern int NtQuerySystemInformation(int type,IntPtr buffer,int length,out int needed);
+  static bool DriverRunning(string app){
+   if(app==null)return false;
+   string folder=Path.GetFileName(Path.GetDirectoryName(app));
+   int length=1<<20,needed;IntPtr buffer=Marshal.AllocHGlobal(length);
+   try{
+    if(NtQuerySystemInformation(11,buffer,length,out needed)!=0)return false; // SystemModuleInformation
+    int count=Marshal.ReadInt32(buffer);
+    for(int i=0;i<count;i++){
+     byte[] path=new byte[256];Marshal.Copy(IntPtr.Add(buffer,8+i*296+40),path,0,256);
+     string name=System.Text.Encoding.ASCII.GetString(path).TrimEnd('\0');
+     if(name.EndsWith("MagicKeyboardFn.sys",StringComparison.OrdinalIgnoreCase))return name.IndexOf(folder,StringComparison.OrdinalIgnoreCase)>=0;
+    }
+    return false;
+   }finally{Marshal.FreeHGlobal(buffer);}
+  }
+
+  // Start menu entry that opens the settings window (which also restarts the tray app).
+  static readonly string Shortcut=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonPrograms),"Orchard Keys.lnk");
+
+  // The installed copy of the settings app: the driver store folder holding this exe.
+  static string InstalledApp(byte[] app){
+   string store=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),@"System32\DriverStore\FileRepository");
+   using(var sha=System.Security.Cryptography.SHA256.Create()){
+    string want=Convert.ToBase64String(sha.ComputeHash(app));
+    foreach(string dir in Directory.GetDirectories(store,"magickeyboardfn.inf_amd64_*")){
+     string exe=Path.Combine(dir,"MagicKeyboardControls.exe");
+     if(File.Exists(exe) && Convert.ToBase64String(sha.ComputeHash(File.ReadAllBytes(exe)))==want)return exe;
+    }
+   }
+   return null;
+  }
+
+  // WScript.Shell via late binding, so Setup needs no extra references.
+  static void CreateShortcut(string target){
+   Type shellType=Type.GetTypeFromProgID("WScript.Shell");
+   object shell=Activator.CreateInstance(shellType);
+   object link=shellType.InvokeMember("CreateShortcut",System.Reflection.BindingFlags.InvokeMethod,null,shell,new object[]{Shortcut});
+   Type linkType=link.GetType();
+   Action<string,object> set=(name,value)=>linkType.InvokeMember(name,System.Reflection.BindingFlags.SetProperty,null,link,new[]{value});
+   set("TargetPath",target);set("WorkingDirectory",Path.GetDirectoryName(target));set("IconLocation",target+",0");
+   set("Description","Customize the Magic Keyboard keys (also restarts the tray app)");
+   linkType.InvokeMember("Save",System.Reflection.BindingFlags.InvokeMethod,null,link,null);
   }
 
   // Windows keeps the previous driver loaded while any keyboard device uses it (a paired
@@ -156,6 +240,7 @@ namespace MagicKeyboardSetup {
     }
    }
    using(RegistryKey run=Registry.LocalMachine.OpenSubKey(RunKey,true)){if(run!=null)run.DeleteValue("MagicKeyboardControls",false);}
+   try{File.Delete(Shortcut);}catch(Exception){}
    // Stop trusting the test certificate Install added.
    X509Certificate2 certificate=new X509Certificate2(Resource("MagicKeyboardFn.cer"));
    foreach(StoreName store in new[]{StoreName.Root,StoreName.TrustedPublisher}){
@@ -167,6 +252,12 @@ namespace MagicKeyboardSetup {
    if(TestSigning())Log("Windows test signing is still on. To turn it off, run \"bcdedit /set testsigning off\" as administrator and restart.");
   }
 
-  [STAThread] static void Main(){Application.EnableVisualStyles();Application.Run(new SetupForm());}
+  // /resume: started once at sign-in after the restart test signing needed; installs right away.
+  [STAThread] static void Main(string[] args){
+   Application.EnableVisualStyles();
+   SetupForm form=new SetupForm();
+   if(args.Contains("/resume",StringComparer.OrdinalIgnoreCase))form.Shown+=(s,e)=>{form.Log("Continuing the install after the restart.");form.Run(form.Install);};
+   Application.Run(form);
+  }
  }
 }

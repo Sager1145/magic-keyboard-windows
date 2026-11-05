@@ -1,4 +1,4 @@
-param([switch]$Remove,[switch]$EnableTestSigning,[switch]$NoTray)
+param([switch]$Remove,[switch]$EnableTestSigning,[switch]$NoTray,[switch]$NoPrompt)
 # Installs the MagicKeyboardFn driver package and the tray app on any Windows 10/11 x64 PC.
 # Run from the package folder in an administrator PowerShell.
 #
@@ -29,6 +29,27 @@ public static class MagicKbSetup {
 }
 '@
 
+# Start menu entry that opens the settings window (which also restarts the tray app).
+$shortcut=Join-Path ([Environment]::GetFolderPath('CommonPrograms')) 'Orchard Keys.lnk'
+
+# The installed copy of the settings app: the driver store folder holding this package's exe.
+function Get-InstalledApp {
+    $packaged=Join-Path $root 'driver\MagicKeyboardControls.exe'
+    if(-not (Test-Path -LiteralPath $packaged)){return $null}
+    $hash=(Get-FileHash -LiteralPath $packaged).Hash
+    Get-ChildItem (Join-Path $env:windir 'System32\DriverStore\FileRepository') -Directory -Filter 'magickeyboardfn.inf_amd64_*' -ErrorAction SilentlyContinue |
+        ForEach-Object { Join-Path $_.FullName 'MagicKeyboardControls.exe' } |
+        Where-Object { (Test-Path -LiteralPath $_) -and (Get-FileHash -LiteralPath $_).Hash -eq $hash } |
+        Select-Object -First 1
+}
+
+# Asks before restarting Windows (never with -NoPrompt).
+function Confirm-Restart([string]$question,[string]$arguments='/r /t 5'){
+    if($NoPrompt){return}
+    $answer=Read-Host "$question [y/N]"
+    if($answer -match '^(y|yes)$'){'Restarting...';& shutdown.exe $arguments.Split(' ')}
+}
+
 function Get-PublishedInf {
     $current=$null
     foreach($line in (& pnputil.exe /enum-drivers)){
@@ -44,6 +65,7 @@ if($Remove){
     Remove-ItemProperty -LiteralPath $runKey -Name MagicKeyboardControls -ErrorAction SilentlyContinue
     Get-Process MagicKeyboardControls -ErrorAction SilentlyContinue | Stop-Process -Force
     Remove-Item -LiteralPath $appDir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $shortcut -ErrorAction SilentlyContinue
     # Stop trusting the test certificate the install added.
     $thumb=(New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $cer).Thumbprint
     foreach($store in 'Root','TrustedPublisher'){Remove-Item -LiteralPath "Cert:\LocalMachine\$store\$thumb" -ErrorAction SilentlyContinue}
@@ -60,10 +82,15 @@ if(-not (bcdedit /enum '{current}' | Select-String '^testsigning\s+Yes')){
     }
     $secureBoot=$false
     try{$secureBoot=Confirm-SecureBootUEFI}catch{}
-    if($secureBoot){throw 'Secure Boot is on, so Windows will not allow test signing. Turn Secure Boot off in the PC firmware first.'}
+    if($secureBoot){
+        'Secure Boot is on, so Windows will not allow test signing. Turn Secure Boot off in the PC''s firmware (UEFI) settings, usually under Security or Boot, then run this script again with -EnableTestSigning.'
+        Confirm-Restart 'Restart into the firmware settings now? Save your work first.' '/r /fw /t 5'
+        return
+    }
     & bcdedit.exe /set testsigning on | Out-Host
     if($LASTEXITCODE){throw 'bcdedit could not enable test signing.'}
-    'Test signing enabled. Restart Windows, then run this script again to install the driver.'
+    'Test signing enabled. Restart Windows, then run this script again (without -EnableTestSigning) to install the driver.'
+    Confirm-Restart 'Restart Windows now? Save your work first.'
     return
 }
 
@@ -99,6 +126,16 @@ Remove-Item -LiteralPath (Join-Path $env:windir 'System32\drivers\MagicKeyboardF
 #    Remove the copy an earlier version of this script put in Program Files.
 Get-Process MagicKeyboardControls -ErrorAction SilentlyContinue | Stop-Process -Force
 Remove-Item -LiteralPath $appDir -Recurse -Force -ErrorAction SilentlyContinue
+# Start menu entry "Orchard Keys", pointing at this version (driver store paths change per version).
+$app=Get-InstalledApp
+if($app){
+    $link=(New-Object -ComObject WScript.Shell).CreateShortcut($shortcut)
+    $link.TargetPath=$app
+    $link.WorkingDirectory=Split-Path $app
+    $link.IconLocation="$app,0"
+    $link.Description='Customize the Magic Keyboard keys (also restarts the tray app)'
+    $link.Save()
+}
 
 # 5. Windows keeps the previous driver loaded while any keyboard device uses it (a paired
 #    Bluetooth keyboard stays present even when switched off). Restart every keyboard
@@ -120,5 +157,8 @@ elseif($connected){
 }
 
 if(-not $connected){'Driver staged. Connect the USB-C Magic Keyboard, then rerun this script to bind it.'}
-elseif($reboot){'Driver installed. Restart Windows to finish: the previous version stays loaded until then.'}
+elseif($reboot){
+    'Driver installed. Restart Windows to finish: the previous version stays loaded until then.'
+    Confirm-Restart 'Restart Windows now? Save your work first.'
+}
 else{'Driver installed and running. Default mappings are active now.'}

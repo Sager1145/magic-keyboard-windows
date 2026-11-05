@@ -52,27 +52,30 @@ Everything is customizable:
 
 ## Install
 
-> **Read this first.** The driver is **test-signed**, not signed by Microsoft. Windows loads
-> it only with **test signing on**, which requires **Secure Boot off** in your PC's firmware
-> settings. Installing also makes this PC trust this project's test certificate. This lowers
-> Windows' protection against untrusted drivers, so install it only if you're comfortable
-> with that.
+> **Read this first.** The driver is **test-signed**, not signed by Microsoft. 64-bit Windows
+> loads a driver like this only in **test-signing mode**, which requires **Secure Boot off**
+> in your PC's firmware settings. Trusting the certificate alone isn't enough: that only
+> stops the "unknown publisher" warning. The installers turn test signing on (when you agree)
+> and make this PC trust this project's certificate. This lowers Windows' protection against
+> untrusted drivers, so install only if you're comfortable with that. Loading on any PC
+> without test signing would need Microsoft (attestation) signing.
 
 ### With Setup (recommended)
 
 1. Download **`OrchardKeysSetup.exe`** from
    [Releases](https://github.com/Sager1145/magic-keyboard-windows/releases).
 2. Connect the keyboard with the cable or pair it over Bluetooth.
-3. Run Setup and choose **Install**.
-   - If test signing is off, Setup offers to turn it on. Restart Windows and run Setup
-     again.
-   - If Secure Boot is on, Setup stops. Turn Secure Boot off in your PC's firmware settings
-     first.
-4. If Setup says so, restart Windows. A paired Bluetooth keyboard keeps the previous driver
-   loaded until then.
+3. Run Setup and choose **Install**. Setup sorts out the rest:
+   - **Secure Boot on:** Setup explains the setting and offers to restart straight into your
+     PC's firmware settings, where you turn Secure Boot off. Then run Setup again.
+   - **Test signing off:** Setup turns it on and offers to restart. After the restart it
+     finishes the install by itself when you sign in.
+   - **The previous driver still loaded** (for example after an update over Bluetooth):
+     Setup offers to restart Windows.
+   - Otherwise the keys work right away.
 
 The settings app starts with Windows and lives in the system tray. Click its icon to
-customize the keys.
+customize the keys. If you quit it, open **Orchard Keys** from the Start menu.
 
 ### Manually
 
@@ -80,35 +83,38 @@ Download **`OrchardKeys-<version>-manual.zip`**, unzip it, and run this in an ad
 PowerShell in that folder:
 
 ```powershell
-.\Install-MagicKeyboardFn.ps1 -EnableTestSigning   # only if test signing is off; then restart Windows
-.\Install-MagicKeyboardFn.ps1
+.\Install-MagicKeyboardFn.ps1 -EnableTestSigning
 ```
 
-To do it without the script:
+It handles the same cases as Setup and offers to restart when needed (add `-NoPrompt` to
+skip the questions). If it turned test signing on, run it again after the restart.
+
+To do it without the script, with test signing on:
 1. Trust `driver\MagicKeyboardFn.cer` in the Local Machine **Trusted Root Certification
    Authorities** and **Trusted Publishers** stores.
-2. Run `pnputil /add-driver driver\MagicKeyboardFn.inf /install`.
+2. Run `pnputil /add-driver driver\MagicKeyboardFn.inf /install`, then restart Windows.
 
 ### Updating
 
-Install the new version over the old one, the same way. When an update can't take effect
-right away, the installer says so; restart Windows to finish.
+Install the new version over the old one, the same way. When the update needs a restart,
+the installer offers one.
 
 ### Uninstall
 
 Choose **Uninstall** in Setup, or run `.\Install-MagicKeyboardFn.ps1 -Remove`. Either one
-removes the driver, the settings app and the trusted test certificate. Test signing stays on
-until you turn it off with `bcdedit /set testsigning off` (as administrator) and restart.
+removes the driver, the settings app, the Start menu entry and the trusted test certificate.
+Test signing stays on until you turn it off with `bcdedit /set testsigning off` (as
+administrator) and restart.
 
 ## Troubleshooting
 
-- **The keys do nothing after installing:** restart Windows. Over Bluetooth, the old driver
-  stays loaded until a restart.
-- **The settings window says "driver not running":** check that test signing is on (look for
-  "Test Mode" at the bottom right of the desktop), then reconnect the keyboard or restart.
+- **The keys do nothing after installing:** restart Windows if the installer asked you to.
+  A paired Bluetooth keyboard keeps the old driver loaded until a restart.
+- **The settings window says "driver not running":** check that test signing is on ("Test
+  Mode" shows at the bottom right of the desktop). Running Setup again fixes it.
 - **Search, voice typing and Do Not Disturb don't toggle:** these need the tray app. Without
-  it, F4 and F5 still open Search and voice typing but can't close them. The app starts
-  when you sign in; if you quit it, sign out and back in.
+  it, F4 and F5 still open Search and voice typing but can't close them. Open **Orchard
+  Keys** from the Start menu to start it again.
 - **No battery level in Windows' Bluetooth list:** Windows shows it after the keyboard
   reports its level, which happens when it connects and when the tray app checks.
 
