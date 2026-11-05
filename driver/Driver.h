@@ -79,7 +79,6 @@ extern "C" {
 
 	#define MAGICKB_EVENT_REPORT 1 // Report holds the physical report as received
 	#define MAGICKB_EVENT_APP    2 // run the app action for Key (0-11 F-row, 12 Lock, 13 Fn) / Gesture
-	#define MAGICKB_EVENT_DIAGNOSTIC 3 // Bluetooth packet shape (sizes, header bytes); Key = 1 if used
 
 	typedef struct tagMAGICKB_EVENT
 	{

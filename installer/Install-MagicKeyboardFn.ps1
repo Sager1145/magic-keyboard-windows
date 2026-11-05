@@ -99,6 +99,19 @@ Remove-Item -LiteralPath (Join-Path $env:windir 'System32\drivers\MagicKeyboardF
 #    Remove the copy an earlier version of this script put in Program Files.
 Get-Process MagicKeyboardControls -ErrorAction SilentlyContinue | Stop-Process -Force
 Remove-Item -LiteralPath $appDir -Recurse -Force -ErrorAction SilentlyContinue
+
+# 5. Windows keeps the previous driver loaded while any keyboard device uses it (a paired
+#    Bluetooth keyboard stays present even when switched off). Restart every keyboard
+#    device so the new driver loads now; if Windows refuses, a restart is required.
+if($reboot){
+    $restarted=$true
+    $keyboards=Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like 'USB\VID_05AC&PID_0320&MI_0*' -or $_.InstanceId -like 'BTHENUM\{00001124-0000-1000-8000-00805F9B34FB}_VID&0001004C_PID&0320\*' }
+    foreach($device in $keyboards){
+        & pnputil.exe /restart-device $device.InstanceId | Out-Null
+        if($LASTEXITCODE){$restarted=$false}
+    }
+    if($restarted -and $keyboards){$reboot=$false}
+}
 if($NoTray){Remove-ItemProperty -LiteralPath $runKey -Name MagicKeyboardControls -ErrorAction SilentlyContinue}
 elseif($connected){
     # Open settings as the signed-in user (not elevated); it starts the tray.
@@ -107,5 +120,5 @@ elseif($connected){
 }
 
 if(-not $connected){'Driver staged. Connect the USB-C Magic Keyboard, then rerun this script to bind it.'}
-elseif($reboot){'Driver installed. Restart Windows to finish.'}
+elseif($reboot){'Driver installed. Restart Windows to finish: the previous version stays loaded until then.'}
 else{'Driver installed and running. Default mappings are active now.'}

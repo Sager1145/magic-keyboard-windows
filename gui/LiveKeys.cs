@@ -27,6 +27,17 @@ namespace MagicKeyboard {
     if(GetProp(w,Mark)!=IntPtr.Zero && SameProgram(w))return w;
    return IntPtr.Zero;
   }
+  [DllImport("user32.dll")] static extern bool IsIconic(IntPtr window);
+  [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr window,int command);
+  [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr window);
+  // Brings an open settings window to the front (restoring it if minimized). False if none.
+  public static bool ShowSettings(){
+   IntPtr window=Window();
+   if(window==IntPtr.Zero)return false;
+   if(IsIconic(window))ShowWindow(window,9); // SW_RESTORE
+   SetForegroundWindow(window);
+   return true;
+  }
   static bool SameProgram(IntPtr window){
    int id;GetWindowThreadProcessId(window,out id);
    try{

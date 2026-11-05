@@ -36,6 +36,13 @@ namespace MagicKeyboard {
 
   [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr window,int attribute,ref int value,int size);
   public static void TitleBar(Form form){int dark=Dark?1:0;DwmSetWindowAttribute(form.Handle,20,ref dark,4);}
+  [DllImport("uxtheme.dll",CharSet=CharSet.Unicode)] static extern int SetWindowTheme(IntPtr window,string app,string ids);
+  // Scrollbars in Windows' dark style when the app theme is dark (light keeps the default).
+  public static void Scrollbars(Control c){
+   if(!Dark)return;
+   if(c.IsHandleCreated)SetWindowTheme(c.Handle,"DarkMode_Explorer",null);
+   c.HandleCreated+=(s,e)=>SetWindowTheme(c.Handle,"DarkMode_Explorer",null);
+  }
 
   public static GraphicsPath Round(RectangleF r,float radius){
    GraphicsPath p=new GraphicsPath();float d=radius*2;
@@ -393,7 +400,8 @@ namespace MagicKeyboard {
   public event EventHandler SelectedChanged;
   public ModifierRow(){SetStyle(ControlStyles.AllPaintingInWmPaint|ControlStyles.OptimizedDoubleBuffer|ControlStyles.UserPaint|ControlStyles.ResizeRedraw,true);Cursor=Cursors.Hand;Height=64;}
   // Height follows width: the same key height as KeyboardRow at any window size.
-  static int HeightFor(int width){return KeyGrid.RowHeight(width);} // same key height as the top row
+  // One line at any width, with the same key size as the top row.
+  static int HeightFor(int width){return (int)Math.Ceiling(KeyGrid.Key(width))+4;}
   public override Size GetPreferredSize(Size proposed){return new Size(Width,HeightFor(Width));}
   protected override void OnSizeChanged(EventArgs e){base.OnSizeChanged(e);KeyGrid.Fit(this,HeightFor(Width));}
   protected override void OnHandleCreated(EventArgs e){base.OnHandleCreated(e);KeyGrid.Fit(this,HeightFor(Width));}
@@ -402,8 +410,9 @@ namespace MagicKeyboard {
   public int SelectedKey{get{return selected<0?-1:Keys[selected];}set{int i=Array.IndexOf(Keys,value);if(i==selected)return;selected=i;Invalidate();}}
   // Same bits as KeyboardRow.Held; only fn (bit 13) is drawn here.
   public int Held{get{return held;}set{if(held==value)return;held=value;Invalidate();}}
-  // Slots: fn, control, option, command, space, command, option. Split onto two lines:
-  // fn, control, option, command, then space, command, option.
+  // Slots: fn, control, option, command, space, command, option. When the top row splits,
+  // this row stays one line without the space bar: the left keys, then command and option
+  // at the right.
   RectangleF Slot(int slot){
    float w=KeyGrid.Key(Width),span=KeyGrid.Span(Width,w),left=KeyGrid.Left(Width,w),gap=KeyGrid.Gap;
    if(!KeyGrid.Split(Width)){
@@ -413,11 +422,12 @@ namespace MagicKeyboard {
     float pos=left;for(int k=0;k<slot;k++)pos+=widths[k]+gap;
     return new RectangleF(pos,1,widths[slot],w);
    }
-   float[] line0={w,w,w,w*1.3f},line1={0,w*1.3f,w};
-   line1[0]=Math.Max(0,span-line1[1]-line1[2]-gap*2);
-   float[] widthsOf=slot<4?line0:line1;int s=slot<4?slot:slot-4;
-   float x0=left;for(int k=0;k<s;k++)x0+=widthsOf[k]+gap;
-   return new RectangleF(x0,1+(slot<4?0:w+gap),widthsOf[s],w);
+   float[] all={w,w,w,w*1.3f,0,w*1.3f,w};
+   if(slot==4)return RectangleF.Empty;
+   if(slot<4){float x0=left;for(int k=0;k<slot;k++)x0+=all[k]+gap;return new RectangleF(x0,1,all[slot],w);}
+   float right=left+span;
+   if(slot==6)return new RectangleF(right-all[6],1,all[6],w);
+   return new RectangleF(right-all[6]-gap-all[5],1,all[5],w);
   }
   RectangleF Cap(int i){return Slot(i<4?i:i+1);} // skip the space bar
   int HitTest(Point p){for(int i=0;i<Keys.Length;i++)if(Cap(i).Contains(p))return i;return -1;}
@@ -426,7 +436,8 @@ namespace MagicKeyboard {
   protected override void OnMouseDown(MouseEventArgs e){int h=HitTest(e.Location);if(h<0||h==selected)return;selected=h;Invalidate();if(SelectedChanged!=null)SelectedChanged(this,EventArgs.Empty);}
   protected override void OnPaint(PaintEventArgs e){
    Graphics g=e.Graphics;g.SmoothingMode=SmoothingMode.AntiAlias;g.TextRenderingHint=TextRenderingHint.ClearTypeGridFit;g.Clear(Parent!=null?Parent.BackColor:Theme.Back);
-   using(GraphicsPath space=Theme.Round(Slot(4),Theme.Radius))using(Pen dashed=new Pen(Theme.Line){DashStyle=DashStyle.Dash})g.DrawPath(dashed,space);
+   RectangleF bar=Slot(4);
+   if(bar.Width>0)using(GraphicsPath space=Theme.Round(bar,Theme.Radius))using(Pen dashed=new Pen(Theme.Line){DashStyle=DashStyle.Dash})g.DrawPath(dashed,space);
    Theme.KeyCap(g,Cap(0),"fn",fnGlyph(),true,selected==0,hover==0,(held&(1<<13))!=0);
    float size=Cap(0).Width;
    using(Font small=new Font("Segoe UI",Math.Max(7f,size*0.14f)))

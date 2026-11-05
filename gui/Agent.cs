@@ -95,7 +95,8 @@ namespace MagicKeyboard {
    tray.ContextMenuStrip=menu;
    tray.MouseClick+=(s,e)=>{if(e.Button==MouseButtons.Left)OpenSettings();};
   }
-  static void OpenSettings(){Process.Start(Application.ExecutablePath);}
+  // Brings the open settings window forward, or starts it.
+  static void OpenSettings(){if(!LiveKeys.ShowSettings())Process.Start(Application.ExecutablePath);}
   void Post(Action action){if(IsDisposed)return;try{BeginInvoke(action);}catch(InvalidOperationException){}}
   void Reload(){
    try{saved=Configuration.Load();Push();}

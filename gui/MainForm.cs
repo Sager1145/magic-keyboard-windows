@@ -65,6 +65,7 @@ namespace MagicKeyboard {
    // The page is as tall as its content needs, and at least as tall as the window: when the
    // window is smaller than the content it scrolls instead of cutting anything off.
    Panel host=new Panel{Dock=DockStyle.Fill,AutoScroll=true,BackColor=Theme.Back};
+   Theme.Scrollbars(host);
    // Its width always leaves room for the scrollbar, so the scrollbar appearing never
    // changes the layout (which would resize the keys and hide the scrollbar again).
    int bar=SystemInformation.VerticalScrollBarWidth;
@@ -124,7 +125,7 @@ namespace MagicKeyboard {
     if(category[0].Length>0)action.Items.Add(new ActionItem{Text=category[0],Header=true});
     for(int i=1;i<category.Length;i++)action.Items.Add(new ActionItem{Id=category[i],Text=Actions.Name(new Binding(category[i]))});
    }
-   action.DrawItem+=DrawAction;
+   action.DrawItem+=DrawAction;Theme.Scrollbars(action);
    action.SelectedIndexChanged+=(s,e)=>{
     if(action.SelectedIndex<0)return;
     ActionItem item=(ActionItem)action.Items[action.SelectedIndex];
@@ -137,7 +138,7 @@ namespace MagicKeyboard {
    valueLabel=MakeLabel("",9.75f,FontStyle.Bold,Theme.Ink);editor.Controls.Add(valueLabel,0,5);
    TableLayoutPanel valueRow=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=2,Margin=new Padding(0,4,0,0),BackColor=Theme.Card};
    valueRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));valueRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-   valueField=new Field{Dock=DockStyle.Fill,Margin=new Padding(3,0,3,0)};value=valueField.Box;value.TextChanged+=(s,e)=>{if(!filling)Edited();};
+   valueField=new Field{Dock=DockStyle.Fill,Margin=new Padding(3,0,3,0)};value=valueField.Box;Theme.Scrollbars(value);value.TextChanged+=(s,e)=>{if(!filling)Edited();};
    valueButton=FlatButton("",false);valueButton.Margin=new Padding(8,0,3,0);valueButton.Click+=(s,e)=>ValueButton();
    valueRow.Controls.Add(valueField,0,0);valueRow.Controls.Add(valueButton,1,0);editor.Controls.Add(valueRow,0,6);
    error=MakeLabel("",9,FontStyle.Regular,Theme.Bad);error.MaximumSize=new Size(800,0);editor.Controls.Add(error,0,7);
@@ -439,7 +440,7 @@ namespace MagicKeyboard {
     }
     return;
    }
-   using(Mutex mutex=new Mutex(false,"Local\\MagicKeyboardControlsGui")){if(!mutex.WaitOne(0)){MessageBox.Show(Theme.ProductName+" settings are already open.");return;}Application.EnableVisualStyles();Application.SetCompatibleTextRenderingDefault(false);Application.Run(new MainForm());}
+   using(Mutex mutex=new Mutex(false,"Local\\MagicKeyboardControlsGui")){if(!mutex.WaitOne(0)){LiveKeys.ShowSettings();return;}Application.EnableVisualStyles();Application.SetCompatibleTextRenderingDefault(false);Application.Run(new MainForm());}
   }
  }
 }

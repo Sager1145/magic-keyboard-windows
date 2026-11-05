@@ -120,7 +120,8 @@ namespace MagicKeyboardSetup {
    bool btReboot;
    if(UpdateDriverForPlugAndPlayDevices(IntPtr.Zero,BluetoothId,inf,1,out btReboot)){reboot|=btReboot;Log("Installed the driver on the Bluetooth connection.");}
    try{Directory.Delete(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"MagicKeyboardControls"),true);}catch(Exception){}
-   if(reboot)Log("Restart Windows to finish.");
+   if(reboot && RestartKeyboards()){reboot=false;Log("Restarted the keyboard so the new driver is loaded.");}
+   if(reboot)Log("Restart Windows to finish: the previous version stays loaded until then.");
    else{
     Log("Done. Default mappings are active now.");
     string tray=Registry.GetValue(@"HKEY_LOCAL_MACHINE\"+RunKey,"MagicKeyboardControls",null) as string;
@@ -128,6 +129,19 @@ namespace MagicKeyboardSetup {
     // explorer.exe starts it as the signed-in user, not elevated.
     if(path.Success)Process.Start("explorer.exe","\""+path.Groups[1].Value+"\"");
    }
+  }
+
+  // Windows keeps the previous driver loaded while any keyboard device uses it (a paired
+  // Bluetooth keyboard stays present even when switched off). Restarting each keyboard
+  // device loads the new one; false if Windows refuses, which means a restart is needed.
+  static bool RestartKeyboards(){
+   int exit;string list=Exec("pnputil.exe","/enum-devices /connected",out exit);
+   var ids=Regex.Matches(list,@"(USB\\VID_05AC&PID_0320&MI_0\d\\\S+|BTHENUM\\\{00001124-0000-1000-8000-00805F9B34FB\}_VID&0001004C_PID&0320\\\S+)",RegexOptions.IgnoreCase)
+    .Cast<Match>().Select(m=>m.Value).Distinct().ToList();
+   if(ids.Count==0)return false;
+   bool all=true;
+   foreach(string id in ids){Exec("pnputil.exe","/restart-device \""+id+"\"",out exit);if(exit!=0)all=false;}
+   return all;
   }
 
   void Uninstall(){
