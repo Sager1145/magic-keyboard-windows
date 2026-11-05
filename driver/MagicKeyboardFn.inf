@@ -1,4 +1,4 @@
-; MagicKeyboardFn: function-row, Fn and Lock mapping for the USB-C Apple Magic Keyboard.
+; MagicKeyboardFn (Orchard Keys): function-row, Fn and Lock mapping for the USB-C Apple Magic Keyboard.
 ; Installs HidUsb from input.inf with VHF and MagicKeyboardFn as lower filters, plus the
 ; settings tray app, which starts at sign-in from the driver store.
 
@@ -8,7 +8,7 @@ Class       = HIDClass
 ClassGuid   = {745a17a0-74d3-11d0-b6fe-00a0c90f57da}
 Provider    = %Provider%
 CatalogFile = MagicKeyboardFn.cat
-DriverVer   = 11/05/2026,1.0.2.0
+DriverVer   = 11/05/2026,1.0.5.0
 PnpLockdown = 1
 
 [DestinationDirs]
@@ -62,8 +62,8 @@ ErrorControl  = 1 ; SERVICE_ERROR_NORMAL
 ServiceBinary = %13%\MagicKeyboardFn.sys
 
 [Strings]
-Provider     = "Magic Keyboard Controls"
+Provider     = "Orchard Keys"
 Manufacturer = "Apple Inc."
-DeviceDesc   = "Magic Keyboard (USB-C) with Fn mapping"
-ServiceDesc  = "Magic Keyboard Fn mapping filter"
-DiskName     = "Magic Keyboard Controls driver disk"
+DeviceDesc   = "Magic Keyboard (USB-C) - Orchard Keys"
+ServiceDesc  = "Orchard Keys Fn mapping filter"
+DiskName     = "Orchard Keys driver disk"

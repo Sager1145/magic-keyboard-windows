@@ -1,6 +1,6 @@
-# Magic Keyboard for Windows
+# Orchard Keys
 
-Makes Apple's **USB-C Magic Keyboard** (USB `05AC:0320`) work like it does on a Mac,
+**Orchard Keys** makes Apple's **USB-C Magic Keyboard** (USB `05AC:0320`) work like it does on a Mac,
 on Windows 10/11 x64. It covers the function row, a usable **Fn** key and the
 **Lock** key (top right). A small kernel driver does the mapping, so everything works
 the moment it's installed, with or without the settings app running.
@@ -11,15 +11,16 @@ the moment it's installed, with or without the settings app running.
 | Fn + F3 | Task View |
 | Fn + F4 | Search: press again to close |
 | Fn + F5 | Voice typing: press again to close |
-| Fn + F6 | Do Not Disturb on/off |
+| Fn + F6 | Screenshot (Win+Shift+S) |
 | Fn + F7 / F8 / F9 | Previous / play-pause / next |
 | Fn + F10 / F11 / F12 | Mute / volume down / up (Windows volume overlay) |
 | Fn (tap) | Switch input language |
-| Lock (hold 1 s) | Lock Windows |
+| Lock (hold 1 s, adjustable) | Lock Windows |
 
-Every key can be remapped, including brightness and volume. Fn and Lock each have separate
-**tap**, **double tap** and **hold** actions. You can choose whether the row gives F1–F12
-or the actions without Fn.
+Every key can be remapped, including brightness and volume. Lock has separate **tap**,
+**double tap** and **hold** actions, with an adjustable hold time (0.5–5 s); Fn has a tap
+action. You can choose whether the row gives F1–F12 or the actions without Fn, and the
+settings window shows each key or combination as you press it.
 
 Available actions:
 - **Media and display:** brightness, volume, mute, media keys.
@@ -39,9 +40,9 @@ Available actions:
 
 Download from [Releases](https://github.com/Sager1145/magic-keyboard-windows/releases):
 
-- **`MagicKeyboardSetup.exe`**: run it, choose **Install**. If test signing is off it
+- **`OrchardKeysSetup.exe`**: run it, choose **Install**. If test signing is off it
   offers to turn it on; restart and run it again.
-- **`MagicKeyboard-<version>-manual.zip`**: unzip, then in an administrator PowerShell:
+- **`OrchardKeys-<version>-manual.zip`**: unzip, then in an administrator PowerShell:
 
   ```powershell
   .\Install-MagicKeyboardFn.ps1 -EnableTestSigning   # only if test signing is off; then restart
@@ -72,7 +73,7 @@ that idea:
    Consumer usages handle brightness, volume, media and Calculator. System-control usages
    handle the power button and sleep. Keyboard reports handle shortcuts such as Win+Tab.
    Windows treats them like any hardware key.
-3. Kernel timers handle tap / double tap / hold, so gestures need no app either.
+3. Kernel timers handle Fn tap and Lock tap / double tap / hold, so gestures need no app either.
 4. A few things aren't keystrokes: commands, typed text, opening apps, toggles that need
    to know whether Search or voice typing is open, and Do Not Disturb. For these the
    driver hands the event to the **tray app** ([`gui/`](gui/)). Without the tray, Search

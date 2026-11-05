@@ -47,11 +47,11 @@ namespace MagicKeyboard {
    BitConverter.GetBytes(c.RequireFn?0:1).CopyTo(b,4);
    BitConverter.GetBytes((ushort)300).CopyTo(b,8);
    BitConverter.GetBytes((ushort)650).CopyTo(b,10);
-   BitConverter.GetBytes((ushort)1000).CopyTo(b,12);
+   BitConverter.GetBytes((ushort)c.LockHoldMs).CopyTo(b,12);
    for(int i=0;i<12;i++)Put(b,16+i*4,c.Keys[i]);
    for(int g=0;g<3;g++){
     Put(b,64+g*4,c.GetBinding(12,g));
-    Put(b,76+g*4,c.GetBinding(13,g));
+    if(g==0)Put(b,76,c.GetBinding(13,0)); // Fn itself has only a tap action
    }
    return b;
   }

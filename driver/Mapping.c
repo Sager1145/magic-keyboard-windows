@@ -64,13 +64,13 @@ static void SetAction(MAGICKB_ACTION* action, UCHAR type, UCHAR modifiers, USHOR
 	action->Usage = usage;
 }
 
-// Defaults match the Mac function row: brightness, Task View, Search, voice
-// typing, Notification Center, media, mute and volume. Fn tap switches input
-// language; holding Lock for one second locks Windows.
+// Defaults follow the Mac function row: brightness, Task View, Search, voice typing,
+// screenshot (Windows has no Do Not Disturb key), media, mute and volume. Fn tap
+// switches input language; holding Lock for one second locks Windows.
 static void DefaultConfig(MAGICKB_CONFIG* c)
 {
 	static const USHORT consumer[12] = { 0x70, 0x6F, 0, 0, 0, 0, 0xB6, 0xCD, 0xB5, 0xE2, 0xEA, 0xE9 };
-	static const UCHAR chord[12] = { 0, 0, 0x2B, 0x16, 0x0B, 0x11 }; // Win + Tab, S, H, N
+	static const UCHAR chord[12] = { 0, 0, 0x2B, 0x16, 0x0B, 0x16 }; // Win + Tab, S, H; Win+Shift+S
 	RtlZeroMemory(c, sizeof(*c));
 	c->Version = MAGICKB_CONFIG_VERSION;
 	c->DoubleTapMs = 300;
@@ -83,11 +83,11 @@ static void DefaultConfig(MAGICKB_CONFIG* c)
 		else
 			SetAction(&c->Row[i], MAGICKB_ACTION_CHORD, 0x08, chord[i]);
 	}
-	// Search, voice typing and Do Not Disturb toggle through the tray app; without it the
-	// driver taps Win+S / Win+H / Win+N.
+	c->Row[5].Modifiers = 0x0A;
+	// Search and voice typing toggle through the tray app; without it the driver taps
+	// Win+S / Win+H.
 	c->Row[3].Type = MAGICKB_ACTION_APP;
 	c->Row[4].Type = MAGICKB_ACTION_APP;
-	c->Row[5].Type = MAGICKB_ACTION_APP;
 	SetAction(&c->Gesture[MAGICKB_GESTURE_FN][0], MAGICKB_ACTION_CHORD, 0x08, 0x2C); // Win+Space
 	SetAction(&c->Gesture[MAGICKB_GESTURE_LOCK][2], MAGICKB_ACTION_CHORD, 0x08, 0x0F); // Win+L
 }
@@ -118,7 +118,11 @@ static BOOLEAN ValidConfig(const MAGICKB_CONFIG* c)
 	if (c->Version != MAGICKB_CONFIG_VERSION || (c->Flags & ~MAGICKB_FLAG_ACTIONS_FIRST))
 		return FALSE;
 	if (c->DoubleTapMs < 100 || c->DoubleTapMs > 1000 || c->LongPressMs < 200 || c->LongPressMs > 5000 ||
-		c->LockHoldMs < 200 || c->LockHoldMs > 5000)
+		c->LockHoldMs < 500 || c->LockHoldMs > 5000)
+		return FALSE;
+	// Fn itself has only a tap action.
+	if (c->Gesture[MAGICKB_GESTURE_FN][1].Type != MAGICKB_ACTION_NONE ||
+		c->Gesture[MAGICKB_GESTURE_FN][2].Type != MAGICKB_ACTION_NONE)
 		return FALSE;
 	for (int i = 0; i < 12; ++i)
 		if (!ValidAction(&c->Row[i], FALSE))
@@ -130,9 +134,11 @@ static BOOLEAN ValidConfig(const MAGICKB_CONFIG* c)
 	return TRUE;
 }
 
-static NTSTATUS OpenParameters(PHANDLE key)
+// The profile lives in the driver's persistent-state key: Windows makes the service's
+// Parameters key read-only to the driver, so writes there fail with access denied.
+static NTSTATUS OpenState(PHANDLE key, ACCESS_MASK access)
 {
-	return IoOpenDriverRegistryKey(g_Driver, DriverRegKeyParameters, KEY_READ | KEY_WRITE, 0, key);
+	return IoOpenDriverRegistryKey(g_Driver, DriverRegKeyPersistentState, access, 0, key);
 }
 
 static BOOLEAN LoadConfig(MAGICKB_CONFIG* config)
@@ -142,7 +148,7 @@ static BOOLEAN LoadConfig(MAGICKB_CONFIG* config)
 	PKEY_VALUE_PARTIAL_INFORMATION value = (PKEY_VALUE_PARTIAL_INFORMATION)buffer;
 	HANDLE key;
 	ULONG length;
-	if (!NT_SUCCESS(OpenParameters(&key)))
+	if (!NT_SUCCESS(OpenState(&key, KEY_READ)))
 		return FALSE;
 	NTSTATUS status = ZwQueryValueKey(key, &name, KeyValuePartialInformation, buffer, sizeof(buffer), &length);
 	ZwClose(key);
@@ -156,7 +162,7 @@ static NTSTATUS SaveConfig(const MAGICKB_CONFIG* config)
 {
 	UNICODE_STRING name = RTL_CONSTANT_STRING(L"Config");
 	HANDLE key;
-	NTSTATUS status = OpenParameters(&key);
+	NTSTATUS status = OpenState(&key, KEY_WRITE);
 	if (!NT_SUCCESS(status))
 		return status;
 	status = ZwSetValueKey(key, &name, 0, REG_BINARY, (PVOID)config, sizeof(*config));

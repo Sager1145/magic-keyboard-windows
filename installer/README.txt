@@ -1,4 +1,4 @@
-Magic Keyboard for Windows (USB-C Magic Keyboard, 05AC:0320)
+Orchard Keys: Fn and function row for the USB-C Magic Keyboard (05AC:0320)
 https://github.com/Sager1145/magic-keyboard-windows
 
 The driver is test-signed. Windows loads it only with test signing on, which needs
@@ -20,7 +20,7 @@ Defaults work as soon as it's installed, with or without the settings app:
   Fn + F3        Task View               Fn + F10        mute
   Fn + F4        Search (again: close)   Fn + F11/F12    volume down/up
   Fn + F5        Voice typing (toggle)   Fn tap          switch input language
-  Fn + F6        Do Not Disturb (toggle) Hold Lock 1 s   lock Windows
+  Fn + F6        Screenshot              Hold Lock 1 s   lock Windows (time adjustable)
 
 The settings app is installed with the driver and starts at sign-in; click its tray
 icon to customize. Changes are stored in the driver.

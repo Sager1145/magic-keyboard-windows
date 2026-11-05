@@ -13,8 +13,9 @@ together with Windows' in-box `vhf` (Virtual HID Framework) filter and `HidUsb`.
     consumer control (2), system control (3),
   - tracks tap / double tap / hold with a 20 ms kernel timer that runs only while a press
     is in progress,
-  - stores its configuration in the service's `Parameters\Config` value. Built-in
-    defaults apply when that value is absent.
+  - stores its configuration in its persistent-state registry key (`Config`). Windows keeps
+    the service's Parameters key read-only to drivers. Built-in defaults apply when the
+    value is absent.
 - `Driver.h`: the shared interface: IOCTLs, `MAGICKB_CONFIG`, `MAGICKB_EVENT`.
   `gui/Driver.cs` and `gui/DriverCapture.cs` must match it.
 

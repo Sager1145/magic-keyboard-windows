@@ -30,12 +30,12 @@ namespace MagicKeyboardSetup {
    bool dark=Dark();
    Color back=dark?Color.FromArgb(32,32,32):Color.FromArgb(243,243,243),card=dark?Color.FromArgb(43,43,43):Color.White,ink=dark?Color.FromArgb(240,240,240):Color.FromArgb(27,27,27),
     muted=dark?Color.FromArgb(160,160,160):Color.FromArgb(96,96,96),accent=dark?Color.FromArgb(96,205,255):Color.FromArgb(0,95,184),accentInk=dark?Color.Black:Color.White;
-   Text="Magic Keyboard Setup";Font=new Font("Segoe UI",9.75f);BackColor=back;ForeColor=ink;Size=new Size(620,470);MinimumSize=Size;StartPosition=FormStartPosition.CenterScreen;AutoScaleMode=AutoScaleMode.Dpi;
+   Text="Orchard Keys Setup";try{Icon=Icon.ExtractAssociatedIcon(Application.ExecutablePath);}catch(Exception){}Font=new Font("Segoe UI",9.75f);BackColor=back;ForeColor=ink;Size=new Size(620,470);MinimumSize=Size;StartPosition=FormStartPosition.CenterScreen;AutoScaleMode=AutoScaleMode.Dpi;
    HandleCreated+=(s,e)=>{int d=dark?1:0;DwmSetWindowAttribute(Handle,20,ref d,4);};
    TableLayoutPanel page=new TableLayoutPanel{Dock=DockStyle.Fill,Padding=new Padding(24,18,24,18),RowCount=4,ColumnCount=1};
    page.RowStyles.Add(new RowStyle(SizeType.AutoSize));page.RowStyles.Add(new RowStyle(SizeType.AutoSize));page.RowStyles.Add(new RowStyle(SizeType.Percent,100));page.RowStyles.Add(new RowStyle(SizeType.AutoSize));
    Controls.Add(page);
-   page.Controls.Add(new Label{Text="Magic Keyboard for Windows",AutoSize=true,Font=new Font("Segoe UI",18,FontStyle.Bold)},0,0);
+   page.Controls.Add(new Label{Text="Orchard Keys",AutoSize=true,Font=new Font("Segoe UI",18,FontStyle.Bold)},0,0);
    headline=new Label{AutoSize=true,ForeColor=muted,MaximumSize=new Size(560,0),Margin=new Padding(3,4,3,12),
     Text="Installs the Fn / function-row driver for the USB-C Magic Keyboard (05AC:0320) and the settings tray. The driver is test-signed: Windows test signing must be on, which needs Secure Boot off."};
    page.Controls.Add(headline,0,1);
@@ -66,7 +66,7 @@ namespace MagicKeyboardSetup {
   void Install(){
    if(!TestSigning()){
     if(SecureBoot()){Log("Secure Boot is on, so Windows won't load a test-signed driver. Turn Secure Boot off in your PC's firmware settings, then run Setup again.");return;}
-    if((DialogResult)Invoke((Func<DialogResult>)(()=>MessageBox.Show(this,"Windows test signing is off. Turn it on now? You'll need to restart Windows and run Setup again.","Magic Keyboard Setup",MessageBoxButtons.OKCancel,MessageBoxIcon.Question)))!=DialogResult.OK){Log("Cancelled: test signing is required.");return;}
+    if((DialogResult)Invoke((Func<DialogResult>)(()=>MessageBox.Show(this,"Windows test signing is off. Turn it on now? You'll need to restart Windows and run Setup again.","Orchard Keys Setup",MessageBoxButtons.OKCancel,MessageBoxIcon.Question)))!=DialogResult.OK){Log("Cancelled: test signing is required.");return;}
     int code;Log(Exec("bcdedit.exe","/set testsigning on",out code).Trim());
     Log(code==0?"Test signing turned on. Restart Windows, then run Setup again.":"bcdedit failed ("+code+").");
     return;

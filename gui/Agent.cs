@@ -17,6 +17,7 @@ namespace MagicKeyboard {
   Configuration saved;ActionRunner runner;NotifyIcon tray;DriverCapture capture;
   readonly bool observe;bool started;
   string driverText="Starting",actionText="",inputText="No function-key input yet";
+  int liveHeld,liveKey=-1,liveSeq;bool liveFn;
   IntPtr usbNotifications;
   [StructLayout(LayoutKind.Sequential)] struct DeviceFilter {
    public int Size, Type, Reserved;
@@ -60,7 +61,7 @@ namespace MagicKeyboard {
    watcher.EnableRaisingEvents=true;
    reload.Tick+=(s,e)=>{reload.Stop();Reload();};
    Icon icon;try{icon=Theme.TrayIcon();}catch(Exception){icon=SystemIcons.Application;}
-   tray=new NotifyIcon{Icon=icon,Visible=true,Text="Magic Keyboard"};
+   tray=new NotifyIcon{Icon=icon,Visible=true,Text=Theme.ProductName};
    ContextMenuStrip menu=Theme.Menu();
    ToolStripItem open=menu.Items.Add("Customize keys…",null,(s,e)=>OpenSettings());open.Font=new Font(menu.Font,FontStyle.Bold);
    menu.Items.Add("Reconnect keyboard",null,(s,e)=>Connect());
@@ -84,7 +85,9 @@ namespace MagicKeyboard {
    WriteStatus();
   }
   void WriteStatus(){
-   try{File.WriteAllText(StatusFile,driverText+"\n"+actionText+"\n"+inputText);}catch(IOException){}catch(UnauthorizedAccessException){}
+   // Line 4 feeds the settings window's live display: held keys;last key;Fn held;press count.
+   string live=liveHeld+";"+liveKey+";"+(liveFn?1:0)+";"+liveSeq;
+   try{File.WriteAllText(StatusFile,driverText+"\n"+actionText+"\n"+inputText+"\n"+live);}catch(IOException){}catch(UnauthorizedAccessException){}
   }
   void Connect(){
    if(capture!=null){capture.Dispose();capture=null;}
@@ -104,16 +107,23 @@ namespace MagicKeyboard {
    if(observe){actionText="App action (observe only): "+Actions.Name(binding);WriteStatus();return;}
    runner.Execute(key,binding);
   }
+  // Reports presses that involve Fn, F1-F12 or Lock (with whatever else is held) for the
+  // settings window. Plain typing is never recorded.
   void OnPhysical(PhysicalKeys keys){
-   int newlyPressed=keys.Row & ~physical.Row;
-   bool newFn=keys.Fn && !physical.Fn,newLock=keys.Lock && !physical.Lock;
-   physical=keys;
-   var names=Enumerable.Range(0,12).Where(i=>(newlyPressed&(1<<i))!=0).Select(i=>"F"+(i+1));
-   string pressed=String.Join(" + ",names);
-   if(newFn || (keys.Fn && pressed.Length!=0))pressed=pressed.Length==0?"Fn":"Fn + "+pressed;
-   if(newLock)pressed=pressed.Length==0?"Lock":pressed+" + Lock";
-   if(pressed.Length==0)return;
-   inputText="Fn driver · "+pressed;WriteStatus();
+   PhysicalKeys was=physical;physical=keys;
+   int fresh=keys.Held & ~was.Held;
+   bool changed=keys.Held!=0 && (fresh!=0 || keys.Mods!=was.Mods || keys.Extra!=was.Extra);
+   liveHeld=keys.Held;
+   if(!changed){if(keys.Held!=was.Held)WriteStatus();return;} // a release: only the highlight changes
+   if(fresh!=0){
+    int row=fresh&0xFFF;
+    if(row!=0){liveKey=0;while((row&(1<<liveKey))==0)liveKey++;}
+    else liveKey=(fresh&(1<<12))!=0?12:13;
+   }
+   liveFn=keys.Fn;liveSeq++;
+   string pressed=keys.Describe();
+   inputText="Fn driver · "+pressed;
+   WriteStatus();
    if(observe)File.AppendAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"physical-verification.log"),pressed+Environment.NewLine);
   }
   protected override void WndProc(ref Message message){

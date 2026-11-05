@@ -63,13 +63,14 @@ namespace MagicKeyboard {
    byte[] expected=new byte[Driver.ConfigSize];
    expected[0]=1;expected[8]=0x2C;expected[9]=1;expected[10]=0x8A;expected[11]=2;expected[12]=0xE8;expected[13]=3;
    ushort[] consumer={0x70,0x6F,0,0,0,0,0xB6,0xCD,0xB5,0xE2,0xEA,0xE9};
-   byte[] chord={0,0,0x2B,0x16,0x0B,0x11};
+   byte[] chord={0,0,0x2B,0x16,0x0B,0x16};
    for(int i=0;i<12;i++){
     int o=16+i*4;
     if(consumer[i]!=0){expected[o]=3;expected[o+2]=(byte)consumer[i];expected[o+3]=(byte)(consumer[i]>>8);}
     else{expected[o]=2;expected[o+1]=8;expected[o+2]=chord[i];}
    }
-   expected[16+3*4]=5;expected[16+4*4]=5;expected[16+5*4]=5; // Search, voice typing, Do Not Disturb: tray app, Win+S / Win+N fallback
+   expected[16+3*4]=5;expected[16+4*4]=5; // Search, voice typing: tray app, Win+S / Win+H fallback
+   expected[16+5*4+1]=0x0A; // Screenshot: Win+Shift+S
    expected[64+8]=2;expected[64+9]=8;expected[64+10]=0x0F; // Lock long: Win+L
    expected[76]=2;expected[77]=8;expected[78]=0x2C; // Fn single: Win+Space
    byte[] actual=Driver.Build(Configuration.Create());
