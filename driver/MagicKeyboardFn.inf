@@ -1,0 +1,69 @@
+; MagicKeyboardFn: function-row, Fn and Lock mapping for the USB-C Apple Magic Keyboard.
+; Installs HidUsb from input.inf with VHF and MagicKeyboardFn as lower filters, plus the
+; settings tray app, which starts at sign-in from the driver store.
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = HIDClass
+ClassGuid   = {745a17a0-74d3-11d0-b6fe-00a0c90f57da}
+Provider    = %Provider%
+CatalogFile = MagicKeyboardFn.cat
+DriverVer   = 11/05/2026,1.0.2.0
+PnpLockdown = 1
+
+[DestinationDirs]
+MagicKb_Files = 13
+
+[SourceDisksNames]
+1 = %DiskName%
+
+[SourceDisksFiles]
+MagicKeyboardFn.sys = 1
+MagicKeyboardControls.exe = 1
+
+[Manufacturer]
+%Manufacturer% = MagicKb_Models, NTamd64
+
+[MagicKb_Models.NTamd64]
+%DeviceDesc% = MagicKb_Inst, USB\VID_05AC&PID_0320&MI_01
+
+[MagicKb_Inst.NT]
+Include   = input.inf
+Needs     = HID_Inst.NT
+CopyFiles = MagicKb_Files
+AddReg    = MagicKb_Tray
+
+[MagicKb_Files]
+MagicKeyboardFn.sys
+MagicKeyboardControls.exe
+
+[MagicKb_Tray]
+HKLM,"SOFTWARE\Microsoft\Windows\CurrentVersion\Run","MagicKeyboardControls",0x00000000,"""%13%\MagicKeyboardControls.exe"" --agent"
+
+[MagicKb_Inst.NT.HW]
+Include = input.inf
+Needs   = HID_Inst.NT.HW
+AddReg  = MagicKb_Filters
+
+; vhf must sit below MagicKeyboardFn (the first entry attaches lowest)
+[MagicKb_Filters]
+HKR,,"LowerFilters",0x00010000,"vhf","MagicKeyboardFn"
+
+[MagicKb_Inst.NT.Services]
+Include    = input.inf
+Needs      = HID_Inst.NT.Services
+AddService = MagicKeyboardFn,,MagicKb_Service
+
+[MagicKb_Service]
+DisplayName   = %ServiceDesc%
+ServiceType   = 1 ; SERVICE_KERNEL_DRIVER
+StartType     = 3 ; SERVICE_DEMAND_START
+ErrorControl  = 1 ; SERVICE_ERROR_NORMAL
+ServiceBinary = %13%\MagicKeyboardFn.sys
+
+[Strings]
+Provider     = "Magic Keyboard Controls"
+Manufacturer = "Apple Inc."
+DeviceDesc   = "Magic Keyboard (USB-C) with Fn mapping"
+ServiceDesc  = "Magic Keyboard Fn mapping filter"
+DiskName     = "Magic Keyboard Controls driver disk"

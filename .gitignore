@@ -1,0 +1,35 @@
+# Build output and release assets
+/dist/
+/driver/x64/
+*.exe
+*.dll
+*.pdb
+*.obj
+
+# Local tools, environments and third-party packages (not ours to redistribute)
+.venv/
+tools-7zip/
+usbpcap/
+bootcamp-reference/
+bootcamp-2022/
+apple-official-components/
+Payload
+*.pkg
+*.dmg
+*.msi
+*.cab
+
+# Logs, probes and machine-specific dumps (device instance IDs, serial numbers)
+*.log
+*.pid
+*.txt
+!installer/README.txt
+*.reg
+*-disassembly.txt
+*.json
+xar-toc.xml
+
+# Signing material never leaves this machine
+*.pfx
+*.pvk
+*.snk
