@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
@@ -317,13 +317,18 @@ namespace MagicKeyboard {
   }
  }
 
- // Both keycap rows share one grid: 13 square key widths (F1-F12, a gap, lock), as large
- // as the width allows up to MaxKey, centered.
+ // Both keycap rows share one grid of square keys, as large as the width allows up to
+ // MaxKey, centered: 13 columns (F1-F12, a gap, lock) on one line, or, when that would
+ // make keys smaller than MinKey, 7 columns on two lines.
  static class KeyGrid {
-  public const float Gap=6,Extra=10,MaxKey=200;
-  public static float Key(int width){return Math.Min((width-1-Gap*12-Extra)/13f,MaxKey);}
-  public static float Span(float key){return key*13+Gap*12+Extra;}
-  public static float Left(int width,float key){return (width-1-Span(key))/2;}
+  public const float Gap=6,Extra=10,MaxKey=200,MinKey=46;
+  public static bool Split(int width){return (width-1-Gap*12-Extra)/13f<MinKey;}
+  static int Columns(int width){return Split(width)?7:13;}
+  public static float Key(int width){int n=Columns(width);return Math.Max(8f,Math.Min((width-1-Gap*(n-1)-Extra)/n,MaxKey));}
+  public static float Span(int width,float key){int n=Columns(width);return key*n+Gap*(n-1)+Extra;}
+  public static float Left(int width,float key){return Math.Max(0,(width-1-Span(width,key))/2);}
+  // Height of a keycap row: one or two lines of keys.
+  public static int RowHeight(int width){float k=Key(width);return (int)Math.Ceiling(Split(width)?k*2+Gap:k)+4;}
   // After a width change, ask the parent layout for the matching height (outside the
   // current layout pass, so the rows below move too).
   public static void Fit(Control row,int height){
@@ -341,7 +346,7 @@ namespace MagicKeyboard {
   public event EventHandler SelectedChanged;
   public KeyboardRow(){SetStyle(ControlStyles.AllPaintingInWmPaint|ControlStyles.OptimizedDoubleBuffer|ControlStyles.UserPaint|ControlStyles.ResizeRedraw,true);Cursor=Cursors.Hand;Height=96;}
   // Height follows width so the keys stay square at any window size.
-  static int HeightFor(int width){return (int)Math.Ceiling(KeyGrid.Key(width))+4;}
+  static int HeightFor(int width){return KeyGrid.RowHeight(width);}
   public override Size GetPreferredSize(Size proposed){return new Size(Width,HeightFor(Width));}
   protected override void OnSizeChanged(EventArgs e){base.OnSizeChanged(e);KeyGrid.Fit(this,HeightFor(Width));}
   protected override void OnHandleCreated(EventArgs e){base.OnHandleCreated(e);KeyGrid.Fit(this,HeightFor(Width));}
@@ -354,9 +359,12 @@ namespace MagicKeyboard {
   bool actionsFirst;
   // Actions first: the action icon is the big label. F1-F12 first: the key name is.
   public bool ActionsFirst{get{return actionsFirst;}set{if(actionsFirst==value)return;actionsFirst=value;Invalidate();}}
+  // One line: F1-F12, gap, lock. Two lines: F1-F6, then F7-F12, gap, lock.
   RectangleF Cap(int i){
-   float w=Math.Min(KeyGrid.Key(Width),Height-4),x=KeyGrid.Left(Width,w)+i*(w+KeyGrid.Gap)+(i>11?KeyGrid.Extra:0);
-   return new RectangleF(x,1,w,w);
+   float w=KeyGrid.Key(Width),left=KeyGrid.Left(Width,w);
+   if(!KeyGrid.Split(Width))return new RectangleF(left+i*(w+KeyGrid.Gap)+(i>11?KeyGrid.Extra:0),1,w,w);
+   int line=i<6?0:1,column=i<6?i:i-6;
+   return new RectangleF(left+column*(w+KeyGrid.Gap)+(column>5?KeyGrid.Extra:0),1+line*(w+KeyGrid.Gap),w,w);
   }
   int HitTest(Point p){for(int i=0;i<Keys.Length;i++)if(Cap(i).Contains(p))return i;return -1;}
   protected override void OnMouseMove(MouseEventArgs e){int h=HitTest(e.Location);if(h==hover)return;hover=h;Invalidate();toolTip.SetToolTip(this,h<0?"":tip(Keys[h]));}
@@ -385,7 +393,7 @@ namespace MagicKeyboard {
   public event EventHandler SelectedChanged;
   public ModifierRow(){SetStyle(ControlStyles.AllPaintingInWmPaint|ControlStyles.OptimizedDoubleBuffer|ControlStyles.UserPaint|ControlStyles.ResizeRedraw,true);Cursor=Cursors.Hand;Height=64;}
   // Height follows width: the same key height as KeyboardRow at any window size.
-  static int HeightFor(int width){return (int)Math.Ceiling(KeyGrid.Key(width))+4;} // same height as the top row
+  static int HeightFor(int width){return KeyGrid.RowHeight(width);} // same key height as the top row
   public override Size GetPreferredSize(Size proposed){return new Size(Width,HeightFor(Width));}
   protected override void OnSizeChanged(EventArgs e){base.OnSizeChanged(e);KeyGrid.Fit(this,HeightFor(Width));}
   protected override void OnHandleCreated(EventArgs e){base.OnHandleCreated(e);KeyGrid.Fit(this,HeightFor(Width));}
@@ -394,14 +402,22 @@ namespace MagicKeyboard {
   public int SelectedKey{get{return selected<0?-1:Keys[selected];}set{int i=Array.IndexOf(Keys,value);if(i==selected)return;selected=i;Invalidate();}}
   // Same bits as KeyboardRow.Held; only fn (bit 13) is drawn here.
   public int Held{get{return held;}set{if(held==value)return;held=value;Invalidate();}}
-  // Slots: fn, control, option, command, space, command, option.
+  // Slots: fn, control, option, command, space, command, option. Split onto two lines:
+  // fn, control, option, command, then space, command, option.
   RectangleF Slot(int slot){
-   float w=KeyGrid.Key(Width),span=KeyGrid.Span(w),left=KeyGrid.Left(Width,w),gap=KeyGrid.Gap,h=Height-4;
-   float[] widths={w,w,w,w*1.3f,0,w*1.3f,w};
-   float used=0;foreach(float x in widths)used+=x;
-   widths[4]=span-used-gap*6;
-   float pos=left;for(int k=0;k<slot;k++)pos+=widths[k]+gap;
-   return new RectangleF(pos,1,widths[slot],h);
+   float w=KeyGrid.Key(Width),span=KeyGrid.Span(Width,w),left=KeyGrid.Left(Width,w),gap=KeyGrid.Gap;
+   if(!KeyGrid.Split(Width)){
+    float[] widths={w,w,w,w*1.3f,0,w*1.3f,w};
+    float used=0;foreach(float x in widths)used+=x;
+    widths[4]=Math.Max(0,span-used-gap*6);
+    float pos=left;for(int k=0;k<slot;k++)pos+=widths[k]+gap;
+    return new RectangleF(pos,1,widths[slot],w);
+   }
+   float[] line0={w,w,w,w*1.3f},line1={0,w*1.3f,w};
+   line1[0]=Math.Max(0,span-line1[1]-line1[2]-gap*2);
+   float[] widthsOf=slot<4?line0:line1;int s=slot<4?slot:slot-4;
+   float x0=left;for(int k=0;k<s;k++)x0+=widthsOf[k]+gap;
+   return new RectangleF(x0,1+(slot<4?0:w+gap),widthsOf[s],w);
   }
   RectangleF Cap(int i){return Slot(i<4?i:i+1);} // skip the space bar
   int HitTest(Point p){for(int i=0;i<Keys.Length;i++)if(Cap(i).Contains(p))return i;return -1;}

@@ -34,6 +34,7 @@ static LIST_ENTRY g_Pending;
 static MAGICKB_EVENT g_Ring[MAGICKB_RING_LENGTH];
 static ULONG g_Head, g_Count, g_Sequence;
 static PFILE_OBJECT volatile g_Reader; // handle the tray app reads events on, if any
+static LONG g_BthDiagnostics; // Bluetooth packets described so far (BthComplete)
 
 BOOLEAN ReaderConnected(void)
 {
@@ -269,6 +270,7 @@ NTSTATUS DispatchControl(IN PDEVICE_OBJECT control, IN PIRP irp)
 				KeAcquireSpinLock(&g_RingLock, &irql);
 				g_Head = g_Count = 0;
 				KeReleaseSpinLock(&g_RingLock, irql);
+				InterlockedExchange(&g_BthDiagnostics, 0); // describe the next packets to this reader
 			}
 			else if (g_Reader != stack->FileObject)
 				return CompleteRequest(irp, STATUS_SHARING_VIOLATION, 0);
@@ -666,23 +668,47 @@ NTSTATUS BthComplete(PDEVICE_OBJECT device, PIRP irp, PVOID context)
     PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(irp);
     struct _BRB_L2CA_ACL_TRANSFER* transfer = (struct _BRB_L2CA_ACL_TRANSFER*)stack->Parameters.Others.Argument1;
 
-    if (NT_SUCCESS(irp->IoStatus.Status) && transfer && NT_SUCCESS(transfer->Hdr.Status))
+    if (NT_SUCCESS(irp->IoStatus.Status) && transfer)
     {
-        // BufferSize now holds the bytes received (bthddi.h).
+        // Bytes received: bthddi.h updates BufferSize for short transfers; take the larger
+        // reading of BufferSize and BufferSize - RemainingBufferSize, and only ever look at
+        // bytes inside the original buffer.
         ULONG length = transfer->BufferSize;
         UCHAR* data = NULL;
-        if (length >= 4)
+        if (length >= 2)
         {
             data = (UCHAR*)transfer->Buffer;
             if (!data && transfer->BufferMDL)
                 data = MmGetSystemAddressForMdlSafe(transfer->BufferMDL, NormalPagePriority | MdlMappingNoExecute);
         }
+        BOOLEAN used = FALSE;
         if (data && data[0] == 0xA1)
         {
-            if (data[1] == 1 && length == MAGICKB_REPORT_LENGTH + 1)
+            if (data[1] == 1 && length >= MAGICKB_REPORT_LENGTH + 1)
+            {
                 EngineProcessReport(data + 1, extension->Vhf);
-            else if (data[1] == 0x90)
+                used = TRUE;
+            }
+            else if (data[1] == 0x90 && length >= 4)
+            {
                 NoteBattery(extension, data[3]); // [0xA1][0x90][status][charge]
+                used = TRUE;
+            }
+        }
+        // Diagnostics for the first packets after load: sizes and the two header bytes only,
+        // never report contents.
+        if (InterlockedIncrement(&g_BthDiagnostics) <= 64)
+        {
+            UCHAR info[MAGICKB_REPORT_LENGTH] = { 0 };
+            info[0] = data ? data[0] : 0;
+            info[1] = data && length >= 2 ? data[1] : 0;
+            info[2] = (UCHAR)transfer->TransferFlags;
+            info[3] = (UCHAR)transfer->BufferSize;
+            info[4] = (UCHAR)(transfer->BufferSize >> 8);
+            info[5] = (UCHAR)transfer->RemainingBufferSize;
+            info[6] = (UCHAR)(transfer->RemainingBufferSize >> 8);
+            info[7] = transfer->Buffer ? 1 : transfer->BufferMDL ? 2 : 0;
+            PublishEvent(MAGICKB_EVENT_DIAGNOSTIC, used, 0, info);
         }
     }
 
@@ -718,6 +744,22 @@ NTSTATUS DispatchInternalIoctl(PDEVICE_OBJECT device, PIRP irp)
             IoSetCompletionRoutine(irp, BthComplete, extension, TRUE, TRUE, TRUE);
             return IoCallDriver(extension->LowerDeviceObject, irp);
         }
+        if (brb && InterlockedIncrement(&g_BthDiagnostics) <= 64)
+        {
+            UCHAR info[MAGICKB_REPORT_LENGTH] = { 0 };
+            info[0] = 0xEE; // a request passed through untouched: its BRB type
+            info[1] = (UCHAR)brb->Type;
+            info[2] = (UCHAR)(brb->Type >> 8);
+            PublishEvent(MAGICKB_EVENT_DIAGNOSTIC, 0, 0, info);
+        }
+    }
+    else if (InterlockedIncrement(&g_BthDiagnostics) <= 64)
+    {
+        UCHAR info[MAGICKB_REPORT_LENGTH] = { 0 };
+        ULONG code = stack->Parameters.DeviceIoControl.IoControlCode;
+        info[0] = 0xDD; // another internal request: its control code
+        RtlCopyMemory(&info[1], &code, sizeof(code));
+        PublishEvent(MAGICKB_EVENT_DIAGNOSTIC, 0, 0, info);
     }
 
     IoSkipCurrentIrpStackLocation(irp);

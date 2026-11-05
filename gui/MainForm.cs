@@ -28,7 +28,7 @@ namespace MagicKeyboard {
   Configuration draft;ActionRunner runner;
   KeyboardRow keyboard;Segmented mode,press;RoundCombo action;Field valueField;TextBox value;RoundButton valueButton,tryIt,reset;
   Label title,subtitle,valueLabel,hint,error,status,live;Chip driverPill,trayPill,batteryPill;Stepper holdTime;FlowLayoutPanel holdRow;
-  TableLayoutPanel editor;Panel header;Label modHint;
+  TableLayoutPanel editor,titleRow,footer;Panel header;Label modHint;RoundButton restore;
   ModifierRow modifiers;Segmented actsAs;Label actionLabel;FlowLayoutPanel modRow;
   bool filling;int key,gesture,lastAction=-1;
   readonly System.Windows.Forms.Timer statusPoll=new System.Windows.Forms.Timer{Interval=1000};
@@ -110,7 +110,7 @@ namespace MagicKeyboard {
    editor.Resize+=(s,e)=>Reflow();
    foreach(SizeType t in new[]{SizeType.AutoSize,SizeType.AutoSize,SizeType.AutoSize,SizeType.AutoSize,SizeType.AutoSize,SizeType.AutoSize,SizeType.Absolute,SizeType.AutoSize,SizeType.Percent,SizeType.AutoSize})
     editor.RowStyles.Add(t==SizeType.Percent?new RowStyle(SizeType.Percent,100):t==SizeType.Absolute?new RowStyle(SizeType.Absolute,34):new RowStyle(t));
-   TableLayoutPanel titleRow=new TableLayoutPanel{AutoSize=true,Dock=DockStyle.Fill,ColumnCount=2,Margin=new Padding(0)};
+   titleRow=new TableLayoutPanel{AutoSize=true,Dock=DockStyle.Fill,ColumnCount=2,Margin=new Padding(0)};
    titleRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));titleRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
    title=MakeLabel("F1",18,FontStyle.Bold,Theme.Ink);titleRow.Controls.Add(title,0,0);
    press=new Segmented{Items=new[]{"Tap","Double tap","Hold"},Anchor=AnchorStyles.Top|AnchorStyles.Right,Width=330,Margin=new Padding(12,4,0,0),Font=Font};
@@ -165,10 +165,10 @@ namespace MagicKeyboard {
    page.Controls.Add(Card(editor),0,4);
 
    // Footer: save state, restore all
-   TableLayoutPanel footer=new TableLayoutPanel{Dock=DockStyle.Fill,AutoSize=true,ColumnCount=3,Margin=new Padding(0)};
+   footer=new TableLayoutPanel{Dock=DockStyle.Fill,AutoSize=true,ColumnCount=3,Margin=new Padding(0)};
    footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
    status=new Label{AutoEllipsis=true,Dock=DockStyle.Fill,ForeColor=Theme.Muted,Text="Changes are saved to the keyboard as you make them.",TextAlign=ContentAlignment.MiddleLeft};
-   RoundButton restore=new RoundButton("Restore all defaults",false){Margin=new Padding(8,0,0,0)};
+   restore=new RoundButton("Restore all defaults",false){Margin=new Padding(8,0,0,0)};
    restore.Click+=(s,e)=>{
     if(MessageBox.Show(this,"Reset every key to its default action?",Theme.ProductName,MessageBoxButtons.OKCancel,MessageBoxIcon.Question)!=DialogResult.OK)return;
     draft=Configuration.Create();filling=true;mode.Selected=0;filling=false;keyboard.ActionsFirst=false;Select(0,0);keyboard.Invalidate();modifiers.Invalidate();Changed();
@@ -203,14 +203,28 @@ namespace MagicKeyboard {
   }
 
   void Reflow(){
-   if(header==null || editor==null)return;
+   if(header==null || editor==null || footer==null || restore==null)return;
    LayoutHeader();
    int width=header.ClientSize.Width;
    int inner=Math.Max(160,editor.ClientSize.Width-8);
    foreach(Label l in new[]{subtitle,hint,error,modHint})if(l!=null)l.MaximumSize=new Size(inner,0);
    live.MaximumSize=new Size(Math.Max(160,width),0);
-   press.Width=Math.Max(180,Math.Min(330,inner-title.PreferredSize.Width-24));
+   // Tap / Double tap / Hold sits beside the key name, or under it when there is no room.
+   bool stackTitle=inner<title.PreferredSize.Width+200+24;
+   MoveCell(titleRow,press,stackTitle?0:1,stackTitle?1:0);
+   press.Anchor=AnchorStyles.Top|(stackTitle?AnchorStyles.Left:AnchorStyles.Right);
+   press.Width=stackTitle?Math.Min(330,inner):Math.Max(180,Math.Min(330,inner-title.PreferredSize.Width-24));
+   // "Restore all defaults" moves under the status line when the footer is narrow.
+   bool stackFooter=footer.ClientSize.Width<TextRenderer.MeasureText(status.Text,status.Font).Width+restore.Width+24;
+   MoveCell(footer,restore,stackFooter?0:1,stackFooter?1:0);
+   restore.Anchor=AnchorStyles.Top|AnchorStyles.Left;
+   restore.Margin=stackFooter?new Padding(0,6,0,0):new Padding(8,0,0,0);
    actsAs.Width=Math.Max(200,Math.Min(420,inner));
+  }
+
+  static void MoveCell(TableLayoutPanel table,Control control,int column,int row){
+   TableLayoutPanelCellPosition at=table.GetPositionFromControl(control);
+   if(at.Column!=column || at.Row!=row)table.SetCellPosition(control,new TableLayoutPanelCellPosition(column,row));
   }
 
   void DrawAction(object sender,DrawItemEventArgs e){
