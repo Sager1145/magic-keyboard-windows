@@ -54,7 +54,9 @@ Everything is customizable:
   settings window shows the level and whether it's charging or plugged in, and Windows'
   Settings > Bluetooth & devices shows the level over the cable or Bluetooth. You also get a
   warning at 10%.
-- **Fast USB polling:** over the cable, Windows reads the keyboard every 1 ms instead of 8 ms.
+- **Fast USB polling:** over the cable, Windows reads the keyboard every 4 ms (250 Hz) instead of
+  8 ms (125 Hz). That is as fast as the keyboard sends reports; polling faster adds nothing.
+  Over Bluetooth the keyboard keeps its own default rate.
 
 ## Install
 
@@ -158,7 +160,7 @@ same, for every key:
      request (`hidbth!HidBthGetReportFlowCompletion`).
 6. **Fast polling**: a second INF (`MagicKeyboardUsb.inf`) puts the same driver below
    Windows' USB composite driver, where it lowers the keyboard's interrupt endpoint interval
-   from 8 ms to 1 ms in the descriptors Windows reads.
+   from 8 ms to 4 ms in the descriptors Windows reads. Bluetooth is unchanged.
 
 ## Privacy and security
 
@@ -180,7 +182,7 @@ ISO mounted (any drive letter, or set `EWDK` to its root) and the .NET Framework
 that comes with Windows. From the repository root:
 
 ```powershell
-.\Build-Package.ps1 -Version 1.2.0   # tray app, signed driver package, release assets in dist\
+.\Build-Package.ps1 -Version 1.2.1   # tray app, signed driver package, release assets in dist\
 ```
 
 `driver\Build.cmd` signs with a local WDK test certificate whose thumbprint is set in the

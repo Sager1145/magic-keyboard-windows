@@ -136,9 +136,10 @@ extern "C" {
 	// USB polling: the keyboard asks for bInterval 8 (8 ms, 125 Hz) at full speed. The USB
 	// device filter rewrites interrupt IN endpoints to this many ms in the configuration
 	// descriptor, before usbccgp selects the configuration and the hub schedules the
-	// endpoints. 1 ms (1000 Hz) is the full-speed minimum. Measured: at 4 ms the keyboard
-	// delivered new reports at every poll.
-	#define MAGICKB_USB_INTERVAL_MS 1
+	// endpoints. Measured on the USB-C model: its firmware produces at most one report per
+	// ~4 ms (250 Hz). At 4 ms polling it filled every poll; at 1 ms polling the gaps still
+	// came in 4 ms steps. So 4 ms doubles the rate, and faster polling only trims latency.
+	#define MAGICKB_USB_INTERVAL_MS 4
 
 	NTSTATUS DriverEntry(IN PDRIVER_OBJECT driverObject, IN PUNICODE_STRING registryPath);
 	void DriverUnload(IN PDRIVER_OBJECT fido);

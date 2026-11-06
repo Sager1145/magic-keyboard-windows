@@ -2,7 +2,7 @@
 ; (05AC:0320) and the Magic Keyboard 2 (2015, 05AC:0267).
 ; Installs the in-box USB composite driver (usbccgp, from usb.inf) on the keyboard's USB device
 ; node with MagicKeyboardFn as a lower filter. In that position the filter only rewrites the
-; interrupt endpoints' bInterval from 8 ms to MAGICKB_USB_INTERVAL_MS (1 ms) in the configuration
+; interrupt endpoints' bInterval from 8 ms to MAGICKB_USB_INTERVAL_MS (4 ms) in the configuration
 ; descriptor; the keyboard interface keeps its own MagicKeyboardFn.inf. A separate INF because a
 ; package INF has one class: this node is in the USB class, the keyboard interface in HIDClass.
 ; It neither copies MagicKeyboardFn.sys nor adds the service: MagicKeyboardFn.inf owns both, so
@@ -16,7 +16,7 @@ Class       = USB
 ClassGuid   = {36fc9e60-c465-11cf-8056-444553540000}
 Provider    = %Provider%
 CatalogFile = MagicKeyboardUsb.cat
-DriverVer   = 11/06/2026,1.2.0.0
+DriverVer   = 11/06/2026,1.2.1.0
 PnpLockdown = 1
 
 [Manufacturer]
