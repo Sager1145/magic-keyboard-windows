@@ -1,4 +1,4 @@
-param([string]$Version='1.2.2',[string]$Output='dist')
+param([string]$Version='1.2.3',[string]$Output='dist')
 $ErrorActionPreference='Stop'
 # Builds the release assets into dist\ (or -Output):
 #   OrchardKeysSetup.exe                  one-file installer (driver package + tray embedded)

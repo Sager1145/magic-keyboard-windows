@@ -16,7 +16,7 @@ Class       = USB
 ClassGuid   = {36fc9e60-c465-11cf-8056-444553540000}
 Provider    = %Provider%
 CatalogFile = MagicKeyboardUsb.cat
-DriverVer   = 11/06/2026,1.2.2.0
+DriverVer   = 11/06/2026,1.2.3.0
 PnpLockdown = 1
 
 [Manufacturer]

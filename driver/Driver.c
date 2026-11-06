@@ -621,6 +621,8 @@ NTSTATUS DispatchPnp(IN PDEVICE_OBJECT fido, IN PIRP irp)
 	//Start the lower stack first, then the virtual HID device that carries mapped actions
 	if (fcn == IRP_MN_START_DEVICE)
 	{
+		// A GET_REPORT mark never survives a stop/start (channel handles get reused).
+		InterlockedExchangePointer(&pdx->BtGetReportChannel, NULL);
 		status = IoForwardIrpSynchronously(pdx->LowerDeviceObject, irp) ? irp->IoStatus.Status : STATUS_UNSUCCESSFUL;
 		if (NT_SUCCESS(status))
 		{
@@ -641,8 +643,8 @@ NTSTATUS DispatchPnp(IN PDEVICE_OBJECT fido, IN PIRP irp)
 
 	if (fcn == IRP_MN_SURPRISE_REMOVAL && !pdx->UsbDevice)
 		EngineDetach(pdx, FALSE);
-	// A GET_REPORT mark never survives a stop/start or removal (channel handles get reused).
-	if (fcn == IRP_MN_START_DEVICE || fcn == IRP_MN_SURPRISE_REMOVAL)
+	// A GET_REPORT mark never survives removal (channel handles get reused).
+	if (fcn == IRP_MN_SURPRISE_REMOVAL)
 		InterlockedExchangePointer(&pdx->BtGetReportChannel, NULL);
 
 	//Handle remove device specially in order to cleanup device stack
@@ -652,11 +654,13 @@ NTSTATUS DispatchPnp(IN PDEVICE_OBJECT fido, IN PIRP irp)
 		VHFHANDLE vhf = pdx->UsbDevice ? NULL : EngineDetach(pdx, TRUE);
 		if (vhf)
 			VhfDelete(vhf, TRUE);
-		IoSkipCurrentIrpStackLocation(irp);
-
-		status = IoCallDriver(pdx->LowerDeviceObject, irp);
-
+		// Wait for in-flight work (the battery work item) before the lower stack sees the
+		// removal, so none of it touches a device that is being torn down. The drivers
+		// above have already finished their reads by the time REMOVE reaches this filter.
 		IoReleaseRemoveLockAndWait(&pdx->RemoveLock, irp);
+
+		IoSkipCurrentIrpStackLocation(irp);
+		status = IoCallDriver(pdx->LowerDeviceObject, irp);
 
 		RemoveDevice(fido);
 
@@ -879,15 +883,18 @@ NTSTATUS BthComplete(PDEVICE_OBJECT device, PIRP irp, PVOID context)
     // not a key press and not a link change. Leave it exactly as HidBth's GetReport flow
     // expects it. Only a completion that ends the transaction uses the mark up: a failure,
     // a HANDSHAKE (0x0X) or DATA (0xAX). An empty successful read leaves it for the reply.
-    BOOLEAN replyLike = !NT_SUCCESS(irp->IoStatus.Status);
-    if (!replyLike && transfer && transfer->BufferSize >= 1)
+    // Only look when a mark is set on this channel; ordinary key input skips this.
+    BOOLEAN marked = transfer && transfer->ChannelHandle &&
+        extension->BtGetReportChannel == transfer->ChannelHandle;
+    BOOLEAN replyLike = marked && !NT_SUCCESS(irp->IoStatus.Status);
+    if (marked && !replyLike && transfer->BufferSize >= 1)
     {
         UCHAR* header = (UCHAR*)transfer->Buffer;
         if (!header && transfer->BufferMDL)
             header = MmGetSystemAddressForMdlSafe(transfer->BufferMDL, NormalPagePriority | MdlMappingNoExecute);
         replyLike = header && ((header[0] & 0xF0) == 0x00 || (header[0] & 0xF0) == 0xA0);
     }
-    if (replyLike && transfer && transfer->ChannelHandle &&
+    if (replyLike &&
         InterlockedCompareExchangePointer(&extension->BtGetReportChannel, NULL, transfer->ChannelHandle) ==
             transfer->ChannelHandle)
     {
@@ -923,14 +930,19 @@ NTSTATUS BthComplete(PDEVICE_OBJECT device, PIRP irp, PVOID context)
             }
         }
     }
-    else if (InterlockedExchange(&extension->BtLinkUp, 0))
+    else
     {
-        // A failed read (disconnect, out of range, removal): the link is down. Forget the
-        // level and remove it from Settings rather than show a stale one. A GET_REPORT
-        // mark can't outlive the link: its channel handle may be reused after reconnect.
+        // A failed read (disconnect, out of range, removal). A GET_REPORT mark can't
+        // outlive the link: its channel handle may be reused after reconnect. Clear it on
+        // every failure, not only the first one after the link was up.
         InterlockedExchangePointer(&extension->BtGetReportChannel, NULL);
-        InterlockedExchange(&extension->BtBattery, 0);
-        QueueBattery(extension, 0);
+        if (InterlockedExchange(&extension->BtLinkUp, 0))
+        {
+            // The link is down: forget the level and remove it from Settings rather
+            // than show a stale one.
+            InterlockedExchange(&extension->BtBattery, 0);
+            QueueBattery(extension, 0);
+        }
     }
 
     if (irp->PendingReturned)

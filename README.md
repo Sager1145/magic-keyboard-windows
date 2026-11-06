@@ -13,9 +13,9 @@ the system tray, is for customizing.
   Keyboard 2, the **Eject** key does the Lock key's job. The Touch ID and numeric-keypad
   models aren't supported yet.
 - **Windows:** Windows 10 or 11, 64-bit (x64).
-- **Latest version:** [1.2.2](https://github.com/Sager1145/magic-keyboard-windows/releases/tag/v1.2.2),
-  a bug-fix release: the battery level no longer drops out of Settings over Bluetooth, and
-  removing the keyboard while Fn or Lock is held no longer fires a stray action. See the
+- **Latest version:** [1.2.3](https://github.com/Sager1145/magic-keyboard-windows/releases/tag/v1.2.3),
+  a bug-fix release: the settings window says "Not connected" when the keyboard isn't, and
+  a few rare Bluetooth and removal edge cases in the driver are fixed. See the
   [changelog](CHANGELOG.md).
 
 ## What you get
@@ -187,7 +187,7 @@ ISO mounted (any drive letter, or set `EWDK` to its root) and the .NET Framework
 that comes with Windows. From the repository root:
 
 ```powershell
-.\Build-Package.ps1 -Version 1.2.2   # tray app, signed driver package, release assets in dist\
+.\Build-Package.ps1 -Version 1.2.3   # tray app, signed driver package, release assets in dist\
 ```
 
 `driver\Build.cmd` signs with a local WDK test certificate whose thumbprint is set in the

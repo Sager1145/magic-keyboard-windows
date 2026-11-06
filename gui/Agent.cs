@@ -137,7 +137,9 @@ namespace MagicKeyboard {
    battery=r;
    if(tray!=null){
     // Names the keyboard so it isn't mistaken for the PC's battery (NotifyIcon text max 63).
-    tray.Text=r.Valid?"Magic Keyboard battery "+r:Theme.ProductName;
+    string link=null;
+    if(!r.Valid)try{link=Battery.Link();}catch(Exception){}
+    tray.Text=r.Valid?"Magic Keyboard battery "+r:link==null?Theme.ProductName+" · keyboard not connected":Theme.ProductName;
     if(changed){
      Icon old=tray.Icon,icon;
      try{icon=r.Valid?Theme.BatteryTrayIcon(r.Percent,r.Charging):Theme.TrayIcon();}catch(Exception){icon=null;}

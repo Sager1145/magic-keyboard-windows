@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.2.3
+
+Bug fixes found in a second round of code reviews of 1.2.2, and clearer connection status
+in the settings app. Key mappings are unchanged.
+
+### Fixed
+
+- **"Not connected" is shown in words.** With no keyboard connected, the narrow settings
+  window showed only a gray icon, and the wide one could read "USB connected" in gray while
+  the driver was still loaded. Both now say **Not connected** (or **Driver off** when the
+  keyboard is there but the driver isn't running). The tray icon's tooltip says "keyboard
+  not connected" too, the next time the tray app checks the battery.
+- **No unmapped key press after a reconnect.** The note the driver keeps while Windows waits
+  for a report reply (added in 1.2.2) was meant to be cleared when the keyboard's driver
+  starts, but that line never ran. It also survived a second failed read after a
+  disconnect. Either way, if Bluetooth reused the channel number on reconnect, the first
+  key report could reach Windows unmapped (for example, F1 instead of brightness). The note
+  is now cleared on start and on every failed read.
+- **Ordinary key input is left alone.** The driver looked at the start of every Bluetooth
+  packet to spot report replies. It now does that only while a reply is expected, as in
+  1.2.1.
+- **Removal waits for battery work.** On removal the driver now waits for an in-flight
+  battery update before passing the removal on, so that update can't touch the device as
+  Windows tears it down.
+
+### Checked
+
+- Reviewed by six independent code reviews.
+- Installed and tested on x64 over USB and Bluetooth.
+
+Upgrading from 1.2.2 replaces the driver. Restart Windows if the installer asks.
+
 ## 1.2.2
 
 Bug fixes for the Bluetooth connection and the Fn and Lock keys. Nothing changes in the

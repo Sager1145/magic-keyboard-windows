@@ -388,10 +388,13 @@ namespace MagicKeyboard {
    string name=link=="bluetooth"?"Bluetooth":"USB";
    StatusStrip.Item l=strip.Link;
    l.Glyph=link=="bluetooth"?"":link=="usb"?"":""; // Bluetooth, USB, keyboard
-   l.On=driver && link!=null;
-   l.Text=link==null && !driver?"Not connected":driver?name+" connected":name+" · driver off";
-   l.Short=link==null && !driver?"Off":"";
-   l.Tip=link==null && !driver?"Connect the keyboard with the cable or over Bluetooth.":driver
+   // No keyboard: say so in words, in the compact strip too, not only with a gray icon.
+   // (The driver can stay loaded with no keyboard, e.g. a paired one that's switched off.)
+   bool connected=link!=null;
+   l.On=driver && connected;
+   l.Text=!connected?"Not connected":driver?name+" connected":name+" · driver off";
+   l.Short=!connected?"Not connected":driver?"":"Driver off";
+   l.Tip=!connected?"The keyboard isn't connected. Connect it with the cable, or turn it on to connect over Bluetooth.":driver
     ?(link=="bluetooth"?"Connected over Bluetooth.":"Connected with the cable.")+" The Orchard Keys driver is mapping keys."
     :"The keyboard is connected but the Orchard Keys driver isn't running on this connection. Reconnect the keyboard or restart Windows.";
    bool tray=AgentWindow.Running();
