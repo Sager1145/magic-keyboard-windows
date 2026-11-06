@@ -7,6 +7,8 @@ param([switch]$Remove,[switch]$EnableTestSigning,[switch]$NoTray,[switch]$NoProm
 $ErrorActionPreference='Stop'
 $root=$PSScriptRoot
 $inf=Join-Path $root 'driver\MagicKeyboardFn.inf'
+# 4 ms USB polling: the same driver below the USB composite driver on the keyboard's USB device.
+$usbInf=Join-Path $root 'driver\MagicKeyboardUsb.inf'
 $cer=Join-Path $root 'driver\MagicKeyboardFn.cer'
 # Supported keyboards: 0320 USB-C Magic Keyboard, 0267 Magic Keyboard 2 (2015).
 $productIds=@('0320','0267')
@@ -26,6 +28,45 @@ public static class MagicKbSetup {
   bool reboot;
   if(!UpdateDriverForPlugAndPlayDevices(IntPtr.Zero,hardwareId,inf,1,out reboot))throw new System.ComponentModel.Win32Exception();
   return reboot;
+ }
+}
+// Removes MagicKeyboardFn from the LowerFilters of the keyboard's USB device nodes
+// (USB\VID_05AC&PID_0320\<serial>, PID_0267), present or not. MagicKeyboardUsb.inf adds it
+// there; uninstalling that package should take it away, and this makes sure: a filter left
+// behind after the service is gone stops the keyboard's USB device from starting.
+// Returns the device IDs it changed. Needs administrator rights.
+public static class UsbFilters {
+ const int CR_SUCCESS=0,CM_GETIDLIST_FILTER_ENUMERATOR=1,CM_LOCATE_DEVNODE_PHANTOM=1,CM_DRP_LOWERFILTERS=0x13;
+ [DllImport("cfgmgr32.dll",CharSet=CharSet.Unicode)] static extern int CM_Get_Device_ID_List_SizeW(out int length,string filter,int flags);
+ [DllImport("cfgmgr32.dll",CharSet=CharSet.Unicode)] static extern int CM_Get_Device_ID_ListW(string filter,char[] buffer,int length,int flags);
+ [DllImport("cfgmgr32.dll",CharSet=CharSet.Unicode)] static extern int CM_Locate_DevNodeW(out int devInst,string id,int flags);
+ [DllImport("cfgmgr32.dll",CharSet=CharSet.Unicode)] static extern int CM_Get_DevNode_Registry_PropertyW(int devInst,int property,out int type,byte[] buffer,ref int length,int flags);
+ [DllImport("cfgmgr32.dll",CharSet=CharSet.Unicode)] static extern int CM_Set_DevNode_Registry_PropertyW(int devInst,int property,byte[] buffer,int length,int flags);
+ public static string[] Clear(){
+  var changed=new System.Collections.Generic.List<string>();
+  int length;
+  if(CM_Get_Device_ID_List_SizeW(out length,"USB",CM_GETIDLIST_FILTER_ENUMERATOR)!=CR_SUCCESS || length<2)return changed.ToArray();
+  char[] buffer=new char[length];
+  if(CM_Get_Device_ID_ListW("USB",buffer,length,CM_GETIDLIST_FILTER_ENUMERATOR)!=CR_SUCCESS)return changed.ToArray();
+  foreach(string id in new string(buffer).Split(new[]{'\0'},StringSplitOptions.RemoveEmptyEntries)){
+   string upper=id.ToUpperInvariant();
+   if(!(upper.StartsWith(@"USB\VID_05AC&PID_0320\") || upper.StartsWith(@"USB\VID_05AC&PID_0267\")))continue;
+   int dev;
+   if(CM_Locate_DevNodeW(out dev,id,CM_LOCATE_DEVNODE_PHANTOM)!=CR_SUCCESS)continue;
+   int type,size=0;
+   CM_Get_DevNode_Registry_PropertyW(dev,CM_DRP_LOWERFILTERS,out type,null,ref size,0);
+   if(size<=0)continue;
+   byte[] data=new byte[size];
+   if(CM_Get_DevNode_Registry_PropertyW(dev,CM_DRP_LOWERFILTERS,out type,data,ref size,0)!=CR_SUCCESS)continue;
+   string[] filters=System.Text.Encoding.Unicode.GetString(data,0,size).Split(new[]{'\0'},StringSplitOptions.RemoveEmptyEntries);
+   string[] kept=Array.FindAll(filters,f=>!f.Equals("MagicKeyboardFn",StringComparison.OrdinalIgnoreCase));
+   if(kept.Length==filters.Length)continue;
+   int result;
+   if(kept.Length==0)result=CM_Set_DevNode_Registry_PropertyW(dev,CM_DRP_LOWERFILTERS,null,0,0);
+   else{byte[] value=System.Text.Encoding.Unicode.GetBytes(string.Join("\0",kept)+"\0\0");result=CM_Set_DevNode_Registry_PropertyW(dev,CM_DRP_LOWERFILTERS,value,value.Length,0);}
+   if(result==CR_SUCCESS)changed.Add(id);
+  }
+  return changed.ToArray();
  }
 }
 '@
@@ -51,16 +92,23 @@ function Confirm-Restart([string]$question,[string]$arguments='/r /t 5'){
     if($answer -match '^(y|yes)$'){'Restarting...';& shutdown.exe $arguments.Split(' ')}
 }
 
-function Get-PublishedInf {
+function Get-PublishedInf([string]$originalName){
     $current=$null
     foreach($line in (& pnputil.exe /enum-drivers)){
         if($line -match ':\s+(oem\d+\.inf)\s*$'){$current=$Matches[1]}
-        elseif($line -match ':\s+magickeyboardfn\.inf\s*$' -and $current){$current;$current=$null}
+        elseif($line -match (':\s+'+[regex]::Escape($originalName)+'\s*$') -and $current){$current;$current=$null}
     }
 }
 
 if($Remove){
-    foreach($published in @(Get-PublishedInf)){
+    # The USB polling package first, while the driver service still exists, then any
+    # LowerFilters entry it left on the keyboard's USB device (a filter whose service is gone
+    # stops that device from starting), then the main package.
+    foreach($published in @(Get-PublishedInf 'magickeyboardusb.inf')){
+        & pnputil.exe /delete-driver $published /uninstall /force | Out-Host
+    }
+    foreach($id in [UsbFilters]::Clear()){"Removed the driver from $id."}
+    foreach($published in @(Get-PublishedInf 'magickeyboardfn.inf')){
         & pnputil.exe /delete-driver $published /uninstall /force | Out-Host
     }
     Remove-ItemProperty -LiteralPath $runKey -Name MagicKeyboardControls -ErrorAction SilentlyContinue
@@ -122,6 +170,24 @@ foreach($productId in $productIds){
     if($paired){
         try{if([MagicKbSetup]::Force($bluetoothId,$inf)){$reboot=$true}}catch{"Bluetooth connection not updated: $_"}
         $connected=$true
+    }
+}
+# 4 ms USB polling (optional: a failure is reported and the install goes on). This INF doesn't
+# create the MagicKeyboardFn service (the main INF does, when it installs on a keyboard), so it
+# is added only once the service exists: staged without it, it would claim the keyboard's USB
+# device at the next plug-in, fail to start it, and the keyboard interface would never appear.
+if(-not (Test-Path 'HKLM:\SYSTEM\CurrentControlSet\Services\MagicKeyboardFn')){
+    '4 ms USB polling not added yet: connect the keyboard and run this script again.'
+}else{
+    & pnputil.exe /add-driver $usbInf | Out-Host
+    if($LASTEXITCODE -and $LASTEXITCODE -ne 3010){"4 ms USB polling not added (pnputil returned $LASTEXITCODE)."}
+    else{
+        foreach($productId in $productIds){
+            $deviceId="USB\VID_05AC&PID_$productId"
+            if(Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object InstanceId -like "$deviceId\*"){
+                try{if([MagicKbSetup]::Force($deviceId,$usbInf)){$reboot=$true}}catch{"4 ms USB polling not set: $_"}
+            }
+        }
     }
 }
 # A copy left by the earlier manual install is no longer used.

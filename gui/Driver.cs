@@ -11,6 +11,19 @@ namespace MagicKeyboard {
   public const string Path=@"\\.\MagicKeyboardFn";
   const uint GetConfig=0x9A4B6008; // CTL_CODE(0x9A4B,0x802,METHOD_BUFFERED,FILE_READ_ACCESS)
   const uint SetConfig=0x9A4BA00C; // CTL_CODE(0x9A4B,0x803,METHOD_BUFFERED,FILE_WRITE_ACCESS)
+  const uint SetBattery=0x9A4BA010; // CTL_CODE(0x9A4B,0x804,METHOD_BUFFERED,FILE_WRITE_ACCESS)
+  const uint GetBattery=0x9A4B6014; // CTL_CODE(0x9A4B,0x805,METHOD_BUFFERED,FILE_READ_ACCESS)
+
+  // The last battery report the keyboard sent over Bluetooth while connected, as
+  // [level 1-100][status: bit1 charging], or null when there is none (not connected over
+  // Bluetooth, no report yet, or an older driver).
+  public static byte[] BluetoothBattery(){
+   using(SafeFileHandle handle=Open(0x80000000)){
+    byte[] battery=new byte[2];int returned;
+    if(!DeviceIoControl(handle,GetBattery,null,0,battery,battery.Length,out returned,IntPtr.Zero) || returned!=2)return null;
+    return battery;
+   }
+  }
   public const int ConfigSize=96;
   // HID modifier bit of each physical modifier key, in Configuration.Modifiers order.
   static readonly int[] ModifierBits={0,2,3,7,6};
@@ -26,6 +39,18 @@ namespace MagicKeyboard {
    int error=Marshal.GetLastWin32Error();
    handle.Dispose();
    throw new Win32Exception(error,error==2?"The MagicKeyboardFn driver is not running for a connected keyboard.":new Win32Exception(error).Message);
+  }
+
+  // Passes the battery level read over USB to the driver, which shows it in Settings >
+  // Bluetooth & devices on the keyboard's USB device (writing a device property needs the
+  // kernel or an administrator). Over Bluetooth the driver reads the level itself.
+  public static void PublishBattery(int percent){
+   if(percent<1 || percent>100)return;
+   using(SafeFileHandle handle=Open(0xC0000000)){
+    int returned;
+    if(!DeviceIoControl(handle,SetBattery,new[]{(byte)percent},1,null,0,out returned,IntPtr.Zero))
+     throw new Win32Exception(Marshal.GetLastWin32Error());
+   }
   }
 
   // Sends the profile to the driver, which applies and persists it. Returns RequireFn.

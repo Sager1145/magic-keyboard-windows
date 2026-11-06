@@ -16,6 +16,8 @@ set PKG=x64\Release\package
 if exist %PKG% rmdir /s /q %PKG%
 mkdir %PKG%
 copy /y MagicKeyboardFn.inf %PKG%\ >nul || exit /b 1
+rem Second INF, same .sys: the keyboard's USB device node, for 4 ms polling.
+copy /y MagicKeyboardUsb.inf %PKG%\ >nul || exit /b 1
 copy /y x64\Release\MagicKeyboardFn.sys %PKG%\ >nul || exit /b 1
 rem The tray app ships inside the driver package; build it first (Build-Gui.ps1).
 copy /y ..\MagicKeyboardControls.exe %PKG%\ >nul || exit /b 1
@@ -23,7 +25,7 @@ signtool sign /q /fd sha256 /s My /sha1 %CERT% %PKG%\MagicKeyboardFn.sys
 if errorlevel 1 exit /b %errorlevel%
 "%EWDK%\Program Files\Windows Kits\10\bin\10.0.28000.0\x86\Inf2Cat.exe" /driver:%PKG% /os:10_X64 /uselocaltime > x64\Release\inf2cat.log
 if errorlevel 1 (type x64\Release\inf2cat.log & exit /b 1)
-signtool sign /q /fd sha256 /s My /sha1 %CERT% %PKG%\MagicKeyboardFn.cat
+signtool sign /q /fd sha256 /s My /sha1 %CERT% %PKG%\MagicKeyboardFn.cat %PKG%\MagicKeyboardUsb.cat
 if errorlevel 1 exit /b %errorlevel%
 powershell -NoProfile -Command "Export-Certificate -Cert Cert:\CurrentUser\My\%CERT% -FilePath '%PKG%\MagicKeyboardFn.cer' | Out-Null"
 exit /b %errorlevel%

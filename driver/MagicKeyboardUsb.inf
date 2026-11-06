@@ -1,0 +1,47 @@
+; MagicKeyboardUsb (Orchard Keys): faster USB polling for the USB-C Apple Magic Keyboard
+; (05AC:0320) and the Magic Keyboard 2 (2015, 05AC:0267).
+; Installs the in-box USB composite driver (usbccgp, from usb.inf) on the keyboard's USB device
+; node with MagicKeyboardFn as a lower filter. In that position the filter only rewrites the
+; interrupt endpoints' bInterval from 8 ms to MAGICKB_USB_INTERVAL_MS (1 ms) in the configuration
+; descriptor; the keyboard interface keeps its own MagicKeyboardFn.inf. A separate INF because a
+; package INF has one class: this node is in the USB class, the keyboard interface in HIDClass.
+; It neither copies MagicKeyboardFn.sys nor adds the service: MagicKeyboardFn.inf owns both, so
+; the service's ImagePath always points into that package and removing this INF alone can't
+; leave it pointing at a deleted driver-store folder. Install MagicKeyboardFn.inf first; without
+; the service this node fails to start (the in-box composite driver needs its filter present).
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = USB
+ClassGuid   = {36fc9e60-c465-11cf-8056-444553540000}
+Provider    = %Provider%
+CatalogFile = MagicKeyboardUsb.cat
+DriverVer   = 11/06/2026,1.2.0.0
+PnpLockdown = 1
+
+[Manufacturer]
+%Manufacturer% = MagicKbUsb_Models, NTamd64
+
+[MagicKbUsb_Models.NTamd64]
+%UsbDesc%  = MagicKbUsb_Inst, USB\VID_05AC&PID_0320
+%UsbDesc2% = MagicKbUsb_Inst, USB\VID_05AC&PID_0267
+
+[MagicKbUsb_Inst.NT]
+Include = usb.inf
+Needs   = Composite.Dev.NT
+
+[MagicKbUsb_Inst.NT.HW]
+AddReg = MagicKbUsb_Filters
+
+[MagicKbUsb_Filters]
+HKR,,"LowerFilters",0x00010000,"MagicKeyboardFn"
+
+[MagicKbUsb_Inst.NT.Services]
+Include = usb.inf
+Needs   = Composite.Dev.NT.Services
+
+[Strings]
+Provider     = "Orchard Keys"
+Manufacturer = "Apple Inc."
+UsbDesc      = "Orchard Keys Magic Keyboard USB (fast polling)"
+UsbDesc2     = "Orchard Keys Magic Keyboard 2 USB (fast polling)"

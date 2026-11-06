@@ -1,13 +1,18 @@
 #include "Driver.h"
 #include <initguid.h> // instantiates GUID_MAGICKB_CONTROL below, in this file only
 DRIVER_ADD_DEVICE AddDevice;
-static UCHAR GetLockMask(PDEVICE_OBJECT pdo);
+static UCHAR GetLockMask(PDEVICE_OBJECT pdo, BOOLEAN* bluetooth);
+static void NoteBattery(PDEVICE_EXTENSION extension, UCHAR level);
+static void PublishUsbBattery(PDRIVER_OBJECT driverObject, UCHAR level);
+static BOOLEAN GetBluetoothBattery(PDRIVER_OBJECT driverObject, MAGICKB_BATTERY* battery);
 
 #ifdef ALLOC_PRAGMA
 	#pragma alloc_text (INIT, DriverEntry)
 	#pragma alloc_text (PAGE, DriverUnload)
 	#pragma alloc_text (PAGE, AddDevice)
 	#pragma alloc_text (PAGE, GetLockMask)
+	#pragma alloc_text (PAGE, PublishUsbBattery)
+	#pragma alloc_text (PAGE, GetBluetoothBattery)
 	#pragma alloc_text (PAGE, RemoveDevice)
 	#pragma alloc_text (PAGE, GetLowerDeviceType)
 #endif // ALLOC_PRAGMA
@@ -267,6 +272,30 @@ NTSTATUS DispatchControl(IN PDEVICE_OBJECT control, IN PIRP irp)
 			if (!FromConsole(irp))
 				return CompleteRequest(irp, STATUS_ACCESS_DENIED, 0);
 			return CompleteRequest(irp, EngineSetConfig((const MAGICKB_CONFIG*)irp->AssociatedIrp.SystemBuffer), 0);
+		case IOCTL_MAGICKB_SET_BATTERY:
+		{
+			if (stack->Parameters.DeviceIoControl.InputBufferLength != sizeof(UCHAR))
+				return CompleteRequest(irp, STATUS_INVALID_BUFFER_SIZE, 0);
+			if (!FromConsole(irp))
+				return CompleteRequest(irp, STATUS_ACCESS_DENIED, 0);
+			UCHAR level = *(UCHAR*)irp->AssociatedIrp.SystemBuffer;
+			if (level < 1 || level > 100)
+				return CompleteRequest(irp, STATUS_INVALID_PARAMETER, 0);
+			PublishUsbBattery(control->DriverObject, level);
+			return CompleteRequest(irp, STATUS_SUCCESS, 0);
+		}
+		case IOCTL_MAGICKB_GET_BATTERY:
+		{
+			if (stack->Parameters.DeviceIoControl.OutputBufferLength < sizeof(MAGICKB_BATTERY))
+				return CompleteRequest(irp, STATUS_BUFFER_TOO_SMALL, 0);
+			if (!FromConsole(irp))
+				return CompleteRequest(irp, STATUS_ACCESS_DENIED, 0);
+			MAGICKB_BATTERY battery = { 0 };
+			if (!GetBluetoothBattery(control->DriverObject, &battery))
+				return CompleteRequest(irp, STATUS_NO_SUCH_DEVICE, 0);
+			*(MAGICKB_BATTERY*)irp->AssociatedIrp.SystemBuffer = battery;
+			return CompleteRequest(irp, STATUS_SUCCESS, sizeof(MAGICKB_BATTERY));
+		}
 		case IOCTL_MAGICKB_READ_EVENT:
 			if (stack->Parameters.DeviceIoControl.OutputBufferLength < sizeof(MAGICKB_EVENT))
 				return CompleteRequest(irp, STATUS_BUFFER_TOO_SMALL, 0);
@@ -375,9 +404,10 @@ void DriverUnload(IN PDRIVER_OBJECT driverObject)
 // Byte 9 of the keyboard report holds the top-right key. The USB-C Magic Keyboard (0320)
 // has Lock there (bit 3). The Magic Keyboard 2 (2015, A1644: USB 05AC:0267, Bluetooth
 // 004C:0267) has Eject there instead and reports it as bit 0. Fn is bit 1 on both.
-static UCHAR GetLockMask(PDEVICE_OBJECT pdo)
+static UCHAR GetLockMask(PDEVICE_OBJECT pdo, BOOLEAN* bluetooth)
 {
 	PAGED_CODE();
+	*bluetooth = FALSE;
 
 	// Hardware IDs, e.g. USB\VID_05AC&PID_0267&REV_0098&MI_01 or
 	// BTHENUM\{00001124-0000-1000-8000-00805f9b34fb}_VID&0001004c_PID&0267 (REG_MULTI_SZ).
@@ -393,10 +423,35 @@ static UCHAR GetLockMask(PDEVICE_OBJECT pdo)
 	for (ULONG i = 0; i < ARRAYSIZE(ids); ++i)
 		if (ids[i] >= L'a' && ids[i] <= L'z')
 			ids[i] = (WCHAR)(ids[i] - L'a' + L'A');
+	UCHAR mask = 0x08;
 	for (PWCHAR id = ids; *id; id += wcslen(id) + 1)
+	{
+		if (wcsncmp(id, L"BTHENUM\\", 8) == 0)
+			*bluetooth = TRUE;
 		if (wcsstr(id, L"VID_05AC&PID_0267") || wcsstr(id, L"004C_PID&0267"))
-			return 0x01;
-	return 0x08;
+			mask = 0x01;
+	}
+	return mask;
+}
+
+// TRUE for the keyboard's USB device node (hardware IDs USB\VID_05AC&PID_0320&REV_0410,
+// USB\VID_05AC&PID_0320), FALSE for an interface (&MI_01) or a Bluetooth device.
+static BOOLEAN IsUsbDeviceNode(PDEVICE_OBJECT pdo)
+{
+	PAGED_CODE();
+
+	WCHAR ids[512];
+	ULONG length = 0;
+	RtlZeroMemory(ids, sizeof(ids));
+	if (!NT_SUCCESS(IoGetDeviceProperty(pdo, DevicePropertyHardwareID, sizeof(ids) - 2 * sizeof(WCHAR), ids, &length)) || !ids[0])
+		return FALSE;
+	for (ULONG i = 0; i < ARRAYSIZE(ids); ++i)
+		if (ids[i] >= L'a' && ids[i] <= L'z')
+			ids[i] = (WCHAR)(ids[i] - L'a' + L'A');
+	for (PWCHAR id = ids; *id; id += wcslen(id) + 1)
+		if (wcsncmp(id, L"USB\\", 4) != 0 || wcsstr(id, L"&MI_"))
+			return FALSE;
+	return TRUE;
 }
 
 NTSTATUS AddDevice(IN PDRIVER_OBJECT driverObject, IN PDEVICE_OBJECT pdo)
@@ -422,7 +477,8 @@ NTSTATUS AddDevice(IN PDRIVER_OBJECT driverObject, IN PDEVICE_OBJECT pdo)
 	{
 		IoInitializeRemoveLock(&fidoExt->RemoveLock, 0, 0, 0);
 		fidoExt->Pdo = pdo;
-		fidoExt->LockMask = GetLockMask(pdo);
+		fidoExt->LockMask = GetLockMask(pdo, &fidoExt->Bluetooth);
+		fidoExt->UsbDevice = !fidoExt->Bluetooth && IsUsbDeviceNode(pdo);
 
 		//Add fido to the stack and propagate critical settings from the immediately lower device object
 		PDEVICE_OBJECT fdo = IoAttachDeviceToDeviceStack(fido, pdo);
@@ -438,7 +494,9 @@ NTSTATUS AddDevice(IN PDRIVER_OBJECT driverObject, IN PDEVICE_OBJECT pdo)
 		//will create the expected data structures for reads and writes.
 		fido->Flags |= fdo->Flags & (DO_DIRECT_IO | DO_BUFFERED_IO | DO_POWER_PAGABLE);
 
-		fidoExt->BatteryWork = IoAllocateWorkItem(fido);
+		if (!fidoExt->UsbDevice)
+			fidoExt->BatteryWork = IoAllocateWorkItem(fido);
+		fidoExt->BatteryShown = -1; // unknown: a level (or a removal) from an earlier boot may be stored
 
 		fido->Flags &= ~DO_DEVICE_INITIALIZING; // Clear the DO_DEVICE_INITIALIZING flag so that we can get IRPs
 
@@ -452,6 +510,9 @@ NTSTATUS AddDevice(IN PDRIVER_OBJECT driverObject, IN PDEVICE_OBJECT pdo)
 		IoDeleteDevice(fido);
 		return status;
 	}
+
+	if (fidoExt->UsbDevice)
+		return status; // the control device belongs to the keyboard filters
 
 	KeWaitForSingleObject(&g_ControlGate, Executive, KernelMode, FALSE, NULL);
 	if (g_FilterCount++ == 0)
@@ -471,12 +532,15 @@ void RemoveDevice(IN PDEVICE_OBJECT fido)
 {
 	PAGED_CODE();
 
-	KeWaitForSingleObject(&g_ControlGate, Executive, KernelMode, FALSE, NULL);
-	if (--g_FilterCount == 0)
-		DeleteControl();
-	KeSetEvent(&g_ControlGate, IO_NO_INCREMENT, FALSE);
-
 	PDEVICE_EXTENSION fidoExt = (PDEVICE_EXTENSION)fido->DeviceExtension;
+	if (!fidoExt->UsbDevice)
+	{
+		KeWaitForSingleObject(&g_ControlGate, Executive, KernelMode, FALSE, NULL);
+		if (--g_FilterCount == 0)
+			DeleteControl();
+		KeSetEvent(&g_ControlGate, IO_NO_INCREMENT, FALSE);
+	}
+
 	if (fidoExt->BatteryWork)
 		IoFreeWorkItem(fidoExt->BatteryWork); // the remove lock wait ensured it isn't running
 	if (fidoExt->LowerDeviceObject)
@@ -560,7 +624,7 @@ NTSTATUS DispatchPnp(IN PDEVICE_OBJECT fido, IN PIRP irp)
 		status = IoForwardIrpSynchronously(pdx->LowerDeviceObject, irp) ? irp->IoStatus.Status : STATUS_UNSUCCESSFUL;
 		if (NT_SUCCESS(status))
 		{
-			if (!pdx->Vhf)
+			if (!pdx->Vhf && !pdx->UsbDevice)
 			{
 				VHFHANDLE vhf;
 				NTSTATUS vhfStatus = EngineCreateVhf(fido, &vhf);
@@ -575,14 +639,14 @@ NTSTATUS DispatchPnp(IN PDEVICE_OBJECT fido, IN PIRP irp)
 		return status;
 	}
 
-	if (fcn == IRP_MN_SURPRISE_REMOVAL)
+	if (fcn == IRP_MN_SURPRISE_REMOVAL && !pdx->UsbDevice)
 		EngineDetach(pdx, FALSE);
 
 	//Handle remove device specially in order to cleanup device stack
 	if (fcn == IRP_MN_REMOVE_DEVICE)
 	{
 		// After EngineDetach no report, timer or keyboard switch uses this VHF handle.
-		VHFHANDLE vhf = EngineDetach(pdx, TRUE);
+		VHFHANDLE vhf = pdx->UsbDevice ? NULL : EngineDetach(pdx, TRUE);
 		if (vhf)
 			VhfDelete(vhf, TRUE);
 		IoSkipCurrentIrpStackLocation(irp);
@@ -684,8 +748,15 @@ static VOID BatteryWorker(PDEVICE_OBJECT fido, PVOID context)
         if (level == InterlockedCompareExchange(&extension->BatteryShown, 0, 0))
             break;
         UCHAR value = (UCHAR)level;
-        NTSTATUS status = IoSetDevicePropertyData(extension->Pdo, &DEVPKEY_OrchardBluetoothBattery, LOCALE_NEUTRAL, 0,
-            DEVPROP_TYPE_BYTE, sizeof(value), &value);
+        // Level 0: remove the property, so Settings shows no battery for a connection that
+        // isn't up (a Bluetooth keyboard now on the cable, or out of range).
+        NTSTATUS status = level == 0
+            ? IoSetDevicePropertyData(extension->Pdo, &DEVPKEY_OrchardBluetoothBattery, LOCALE_NEUTRAL, 0,
+                DEVPROP_TYPE_EMPTY, 0, NULL)
+            : IoSetDevicePropertyData(extension->Pdo, &DEVPKEY_OrchardBluetoothBattery, LOCALE_NEUTRAL, 0,
+                DEVPROP_TYPE_BYTE, sizeof(value), &value);
+        if (level == 0 && status == STATUS_OBJECT_NAME_NOT_FOUND)
+            status = STATUS_SUCCESS; // nothing to remove
         if (!NT_SUCCESS(status))
         {
             DebugPrint("BatteryWorker(): IoSetDevicePropertyData failed: 0x%x", status);
@@ -696,11 +767,10 @@ static VOID BatteryWorker(PDEVICE_OBJECT fido, PVOID context)
     IoReleaseRemoveLock(&extension->RemoveLock, extension->BatteryWork);
 }
 
-// Report 0x90 ([status][charge 0-100]) arrives unsolicited and as the reply to the tray
-// app's GET_REPORT; publish a changed level from a work item.
-static void NoteBattery(PDEVICE_EXTENSION extension, UCHAR level)
+// Publishes a changed level (0 = remove the property) from a work item.
+static void QueueBattery(PDEVICE_EXTENSION extension, LONG level)
 {
-    if (level < 1 || level > 100 || !extension->BatteryWork)
+    if (!extension->BatteryWork)
         return;
     InterlockedExchange(&extension->BatteryPending, level);
     if (level == extension->BatteryShown || InterlockedCompareExchange(&extension->BatteryQueued, 1, 0) != 0)
@@ -711,6 +781,85 @@ static void NoteBattery(PDEVICE_EXTENSION extension, UCHAR level)
         return;
     }
     IoQueueWorkItem(extension->BatteryWork, BatteryWorker, DelayedWorkQueue, NULL);
+}
+
+// A level from the keyboard: over Bluetooth its unsolicited report 0x90 ([status][charge]),
+// over USB the tray app's WinUSB read (IOCTL_MAGICKB_SET_BATTERY).
+static void NoteBattery(PDEVICE_EXTENSION extension, UCHAR level)
+{
+    if (level >= 1 && level <= 100)
+        QueueBattery(extension, level);
+}
+
+// USB: the battery report is on interface 0, which runs WinUSB, so the tray app reads it and
+// passes the level here (IOCTL_MAGICKB_SET_BATTERY), and it is written to the keyboard's USB
+// device node. Windows gives the USB and Bluetooth connections separate device containers
+// (two Settings entries). A Bluetooth entry gets a level only from its own reports while its
+// link is up; a paired Bluetooth entry of the same model whose link is down (the keyboard is
+// on the cable now) has its battery removed instead of keeping an old level.
+static void PublishUsbBattery(PDRIVER_OBJECT driverObject, UCHAR level)
+{
+    PAGED_CODE();
+
+    PDEVICE_OBJECT devices[16]; // the control object plus one filter per keyboard connection
+    ULONG count = 0;
+    NTSTATUS status = IoEnumerateDeviceObjectList(driverObject, devices, sizeof(devices), &count);
+    if (!NT_SUCCESS(status))
+    {
+        DebugPrint("PublishUsbBattery(): IoEnumerateDeviceObjectList failed: 0x%x", status);
+        return;
+    }
+    // Models with a USB connection right now (LockMask bits: 0x08 USB-C model, 0x01 0267).
+    UCHAR usbModels = 0;
+    for (ULONG i = 0; i < count; ++i)
+    {
+        PDEVICE_EXTENSION extension = (PDEVICE_EXTENSION)devices[i]->DeviceExtension;
+        if (!extension->IsControl && !extension->Bluetooth && !extension->UsbDevice)
+            usbModels |= extension->LockMask;
+    }
+    for (ULONG i = 0; i < count; ++i)
+    {
+        // Each object is referenced, so its extension stays valid until the dereference;
+        // NoteBattery takes the remove lock before queueing work.
+        PDEVICE_EXTENSION extension = (PDEVICE_EXTENSION)devices[i]->DeviceExtension;
+        if (!extension->IsControl && !extension->UsbDevice)
+        {
+            if (!extension->Bluetooth)
+                NoteBattery(extension, level);
+            else if ((extension->LockMask & usbModels) && !InterlockedCompareExchange(&extension->BtLinkUp, 0, 0))
+                QueueBattery(extension, 0);
+        }
+        ObDereferenceObject(devices[i]);
+    }
+}
+
+// The last battery report of a Bluetooth keyboard whose link is up (IOCTL_MAGICKB_GET_BATTERY).
+static BOOLEAN GetBluetoothBattery(PDRIVER_OBJECT driverObject, MAGICKB_BATTERY* battery)
+{
+    PAGED_CODE();
+
+    PDEVICE_OBJECT devices[16];
+    ULONG count = 0;
+    BOOLEAN found = FALSE;
+    if (!NT_SUCCESS(IoEnumerateDeviceObjectList(driverObject, devices, sizeof(devices), &count)))
+        return FALSE;
+    for (ULONG i = 0; i < count; ++i)
+    {
+        PDEVICE_EXTENSION extension = (PDEVICE_EXTENSION)devices[i]->DeviceExtension;
+        if (!found && !extension->IsControl && extension->Bluetooth &&
+            InterlockedCompareExchange(&extension->BtLinkUp, 0, 0))
+        {
+            LONG value = InterlockedCompareExchange(&extension->BtBattery, 0, 0);
+            if (value & 0xFF)
+            {
+                battery->Level = (UCHAR)(value & 0xFF);
+                battery->Status = (UCHAR)((value >> 8) & 0xFF);
+                found = TRUE;
+            }
+        }
+        ObDereferenceObject(devices[i]);
+    }
+    return found;
 }
 
 /* Bluetooth: HidBth reads the HID interrupt channel with L2CAP ACL transfers. An input
@@ -735,19 +884,105 @@ NTSTATUS BthComplete(PDEVICE_OBJECT device, PIRP irp, PVOID context)
             if (!data && transfer->BufferMDL)
                 data = MmGetSystemAddressForMdlSafe(transfer->BufferMDL, NormalPagePriority | MdlMappingNoExecute);
         }
+        // A completed read: the Bluetooth link is up.
+        InterlockedExchange(&extension->BtLinkUp, 1);
         if (data && data[0] == 0xA1)
         {
             if (data[1] == 1 && length >= MAGICKB_REPORT_LENGTH + 1)
                 EngineProcessReport(data + 1, extension);
-            else if (data[1] == 0x90 && length >= 4)
-                NoteBattery(extension, data[3]); // [0xA1][0x90][status][charge]
+            else if (data[1] == 0x90 && length >= 4 && data[3] >= 1 && data[3] <= 100)
+            {
+                // [0xA1][0x90][status][charge]
+                InterlockedExchange(&extension->BtBattery, data[3] | (data[2] << 8));
+                NoteBattery(extension, data[3]);
+            }
         }
+    }
+    else if (InterlockedExchange(&extension->BtLinkUp, 0))
+    {
+        // A failed read (disconnect, out of range, removal): the link is down. Forget the
+        // level and remove it from Settings rather than show a stale one.
+        InterlockedExchange(&extension->BtBattery, 0);
+        QueueBattery(extension, 0);
     }
 
     if (irp->PendingReturned)
         IoMarkIrpPending(irp);
     IoReleaseRemoveLock(&extension->RemoveLock, irp);
     return STATUS_CONTINUE_COMPLETION;
+}
+
+/* USB polling interval (USB device node only). Walks a configuration descriptor, possibly
+   cut short, and lowers bInterval on interrupt IN endpoints to MAGICKB_USB_INTERVAL_MS.
+   At full speed bInterval counts 1 ms frames. */
+static void PatchPollingInterval(UCHAR* data, ULONG length)
+{
+    for (ULONG i = 0; i + 2 <= length; )
+    {
+        UCHAR size = data[i];
+        if (size < 2 || size > length - i)
+            break;
+        if (data[i + 1] == USB_ENDPOINT_DESCRIPTOR_TYPE && size >= sizeof(USB_ENDPOINT_DESCRIPTOR))
+        {
+            PUSB_ENDPOINT_DESCRIPTOR endpoint = (PUSB_ENDPOINT_DESCRIPTOR)(data + i);
+            if ((endpoint->bmAttributes & USB_ENDPOINT_TYPE_MASK) == USB_ENDPOINT_TYPE_INTERRUPT &&
+                USB_ENDPOINT_DIRECTION_IN(endpoint->bEndpointAddress) && endpoint->bInterval > MAGICKB_USB_INTERVAL_MS)
+            {
+                DebugPrint("PatchPollingInterval(): endpoint 0x%02x bInterval %u -> %u", endpoint->bEndpointAddress,
+                    endpoint->bInterval, MAGICKB_USB_INTERVAL_MS);
+                endpoint->bInterval = MAGICKB_USB_INTERVAL_MS;
+            }
+        }
+        i += size;
+    }
+}
+
+// Patches configuration descriptors that usbccgp reads from the device.
+static NTSTATUS UsbDeviceComplete(PDEVICE_OBJECT device, PIRP irp, PVOID context)
+{
+    UNREFERENCED_PARAMETER(device);
+    PDEVICE_EXTENSION extension = (PDEVICE_EXTENSION)context;
+    PURB urb = (PURB)IoGetCurrentIrpStackLocation(irp)->Parameters.Others.Argument1;
+
+    if (NT_SUCCESS(irp->IoStatus.Status) && urb && USBD_SUCCESS(urb->UrbHeader.Status))
+    {
+        struct _URB_CONTROL_DESCRIPTOR_REQUEST* request = &urb->UrbControlDescriptorRequest;
+        UCHAR* data = (UCHAR*)request->TransferBuffer;
+        if (!data && request->TransferBufferMDL)
+            data = MmGetSystemAddressForMdlSafe(request->TransferBufferMDL, NormalPagePriority | MdlMappingNoExecute);
+        if (data)
+            PatchPollingInterval(data, request->TransferBufferLength);
+    }
+
+    if (irp->PendingReturned)
+        IoMarkIrpPending(irp);
+    IoReleaseRemoveLock(&extension->RemoveLock, irp);
+    return STATUS_CONTINUE_COMPLETION;
+}
+
+// URBs below usbccgp. The interfaces' own transfers pass here too and go straight down:
+// mapping runs once, in the keyboard interface's filter.
+static NTSTATUS DispatchUsbDeviceUrb(PDEVICE_EXTENSION extension, PIRP irp)
+{
+    PURB urb = (PURB)IoGetCurrentIrpStackLocation(irp)->Parameters.Others.Argument1;
+    if (urb && urb->UrbHeader.Function == URB_FUNCTION_GET_DESCRIPTOR_FROM_DEVICE &&
+        urb->UrbControlDescriptorRequest.DescriptorType == USB_CONFIGURATION_DESCRIPTOR_TYPE)
+    {
+        IoCopyCurrentIrpStackLocationToNext(irp);
+        IoSetCompletionRoutine(irp, UsbDeviceComplete, extension, TRUE, TRUE, TRUE);
+        return IoCallDriver(extension->LowerDeviceObject, irp);
+    }
+    // The hub schedules each endpoint from the descriptor passed here.
+    if (urb && urb->UrbHeader.Function == URB_FUNCTION_SELECT_CONFIGURATION && urb->UrbSelectConfiguration.ConfigurationDescriptor)
+    {
+        PUSB_CONFIGURATION_DESCRIPTOR config = urb->UrbSelectConfiguration.ConfigurationDescriptor;
+        PatchPollingInterval((UCHAR*)config, config->wTotalLength);
+    }
+
+    IoSkipCurrentIrpStackLocation(irp);
+    NTSTATUS status = IoCallDriver(extension->LowerDeviceObject, irp);
+    IoReleaseRemoveLock(&extension->RemoveLock, irp);
+    return status;
 }
 
 NTSTATUS DispatchInternalIoctl(PDEVICE_OBJECT device, PIRP irp)
@@ -760,6 +995,8 @@ NTSTATUS DispatchInternalIoctl(PDEVICE_OBJECT device, PIRP irp)
     NTSTATUS status = IoAcquireRemoveLock(&extension->RemoveLock, irp);
     if (!NT_SUCCESS(status))
         return CompleteRequest(irp, status, 0);
+    if (extension->UsbDevice && stack->Parameters.DeviceIoControl.IoControlCode == IOCTL_INTERNAL_USB_SUBMIT_URB)
+        return DispatchUsbDeviceUrb(extension, irp);
     if (stack->Parameters.DeviceIoControl.IoControlCode == IOCTL_INTERNAL_USB_SUBMIT_URB)
     {
         IoCopyCurrentIrpStackLocationToNext(irp);

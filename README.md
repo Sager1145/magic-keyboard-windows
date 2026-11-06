@@ -49,8 +49,12 @@ Everything is customizable:
   For Mac-style shortcuts, set command to Ctrl, so that command+C copies.
 - **Live view:** while the settings window is open, it shows the keys you hold and what
   they will do.
-- **Battery:** the charge shows in the settings window, in the tray icon's tooltip and, over
-  Bluetooth, in Windows' own Bluetooth device list. You also get a warning at 10%.
+- **Battery:** the tray icon shows the keyboard's charge as a number over a level bar (green
+  while charging, red at 20% or less), so it can't be mistaken for the PC's battery. The
+  settings window shows the level and whether it's charging or plugged in, and Windows'
+  Settings > Bluetooth & devices shows the level over the cable or Bluetooth. You also get a
+  warning at 10%.
+- **Fast USB polling:** over the cable, Windows reads the keyboard every 1 ms instead of 8 ms.
 
 ## Install
 
@@ -117,8 +121,10 @@ administrator) and restart.
 - **Search, voice typing and Do Not Disturb don't toggle:** these need the tray app. Without
   it, F4 and F5 still open Search and voice typing but can't close them. Open **Orchard
   Keys** from the Start menu to start it again.
-- **No battery level in Windows' Bluetooth list:** Windows shows it after the keyboard
-  reports its level, which happens when it connects and when the tray app checks.
+- **No battery level in Windows' Bluetooth list:** over Bluetooth, Windows shows it after the
+  keyboard reports its level on its own, which it does when it connects and when the level
+  changes. The Bluetooth entry shows no level while the keyboard isn't connected over
+  Bluetooth (for example while it's on the cable).
 
 ## How it works
 
@@ -144,8 +150,15 @@ same, for every key:
    them in the registry.
 5. **The battery level** comes from the keyboard's own battery report (report 0x90).
    - **Over USB**, the app reads it from the keyboard's second USB interface, which runs
-     on WinUSB because Windows' HID driver rejects that interface's report descriptor.
-   - **Over Bluetooth**, the driver also passes it to Windows' Bluetooth battery display.
+     on WinUSB because Windows' HID driver rejects that interface's report descriptor, and
+     hands it to the driver, which writes it to the USB device for Windows' battery display.
+   - **Over Bluetooth**, the driver keeps the report the keyboard sends on its own and
+     writes it to Windows' battery display; the app asks the driver for it. Nothing asks the
+     keyboard for the report over Bluetooth: Windows' Bluetooth HID driver can crash on that
+     request (`hidbth!HidBthGetReportFlowCompletion`).
+6. **Fast polling**: a second INF (`MagicKeyboardUsb.inf`) puts the same driver below
+   Windows' USB composite driver, where it lowers the keyboard's interrupt endpoint interval
+   from 8 ms to 1 ms in the descriptors Windows reads.
 
 ## Privacy and security
 
@@ -167,7 +180,7 @@ ISO mounted (any drive letter, or set `EWDK` to its root) and the .NET Framework
 that comes with Windows. From the repository root:
 
 ```powershell
-.\Build-Package.ps1 -Version 1.1.0   # tray app, signed driver package, release assets in dist\
+.\Build-Package.ps1 -Version 1.2.0   # tray app, signed driver package, release assets in dist\
 ```
 
 `driver\Build.cmd` signs with a local WDK test certificate whose thumbprint is set in the

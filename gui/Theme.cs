@@ -106,11 +106,55 @@ namespace MagicKeyboard {
 
   [DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr icon);
   static Icon ToIcon(Bitmap b){IntPtr handle=b.GetHicon();Icon icon=(Icon)Icon.FromHandle(handle).Clone();DestroyIcon(handle);return icon;}
+  static bool LightTaskbar(){
+   try{object v=Registry.GetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize","SystemUsesLightTheme",0);return v is int && (int)v==1;}catch(Exception){return false;}
+  }
   // Tray icon: the mono mark in the taskbar's text color, at the current DPI.
   public static Icon TrayIcon(){
-   bool lightTaskbar=false;
-   try{object v=Registry.GetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize","SystemUsesLightTheme",0);lightTaskbar=v is int && (int)v==1;}catch(Exception){}
-   using(Bitmap b=Logo(SystemInformation.SmallIconSize.Width,true,lightTaskbar?Color.Black:Color.White))return ToIcon(b);
+   using(Bitmap b=Logo(SystemInformation.SmallIconSize.Width,true,LightTaskbar()?Color.Black:Color.White))return ToIcon(b);
+  }
+  // Tray icon with the keyboard's battery: the percentage in large solid digits over a
+  // space-bar-shaped level gauge. It can't be mistaken for the PC's battery icon (a battery
+  // outline with a terminal nub and no number). The gauge fills green while charging and
+  // red at 20% or less on battery; otherwise it is in the taskbar's text color.
+  public static Icon BatteryTrayIcon(int percent,bool charging){
+   using(Bitmap b=BatteryMark(SystemInformation.SmallIconSize.Width,percent,charging,LightTaskbar()))return ToIcon(b);
+  }
+  public static Bitmap BatteryMark(int size,int percent,bool charging,bool lightTaskbar){
+   percent=Math.Max(0,Math.Min(100,percent));
+   Color ink=lightTaskbar?Color.Black:Color.White;
+   Color low=lightTaskbar?Color.FromArgb(196,43,28):Color.FromArgb(255,99,99);
+   Color green=lightTaskbar?Color.FromArgb(16,124,16):Color.FromArgb(108,203,95);
+   Color gauge=charging?green:percent<=20?low:ink;
+   Bitmap b=new Bitmap(size,size,System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+   using(Graphics g=Graphics.FromImage(b)){
+    g.SmoothingMode=SmoothingMode.AntiAlias;g.PixelOffsetMode=PixelOffsetMode.HighQuality;
+    g.TextRenderingHint=System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+    float s=size,unit=s/16f;
+    // Gauge: a rounded bar along the bottom, like a space bar.
+    float barHeight=Math.Max(4f,(float)Math.Round(4*unit)),stroke=Math.Max(1f,(float)Math.Round(unit));
+    RectangleF bar=new RectangleF(stroke/2f,s-barHeight-stroke/2f+0.5f,s-stroke,barHeight-0.5f);
+    float radius=Math.Max(1f,barHeight/2.5f);
+    float inner=bar.Width-stroke*2,level=inner*percent/100f;
+    if(level>0)using(GraphicsPath p=Round(new RectangleF(bar.X+stroke,bar.Y+stroke,Math.Max(1f,level),bar.Height-stroke*2),Math.Max(0.5f,radius-stroke)))
+     using(SolidBrush fill=new SolidBrush(gauge))g.FillPath(fill,p);
+    using(GraphicsPath p=Round(bar,radius))using(Pen edge=new Pen(gauge==ink?ink:gauge,stroke))g.DrawPath(edge,p);
+    // Digits: the largest bold size that fits above the gauge ("100" is narrower per digit).
+    string text=percent.ToString();
+    RectangleF room=new RectangleF(0,0,s,bar.Y-unit);
+    using(StringFormat format=new StringFormat(StringFormat.GenericTypographic){Alignment=StringAlignment.Center,LineAlignment=StringAlignment.Center,FormatFlags=StringFormatFlags.NoWrap|StringFormatFlags.NoClip}){
+     float px=room.Height*1.35f;Font font=null;
+     for(;px>4;px-=0.5f){
+      if(font!=null)font.Dispose();
+      font=new Font(text.Length>2?"Segoe UI Semibold":"Segoe UI",px,FontStyle.Bold,GraphicsUnit.Pixel);
+      SizeF m=g.MeasureString(text,font,PointF.Empty,format);
+      if(m.Width<=s+unit*0.5f && m.Height*0.74f<=room.Height)break;
+     }
+     using(font)using(SolidBrush brush=new SolidBrush(ink))
+      g.DrawString(text,font,brush,new RectangleF(-unit,room.Y+unit*0.3f,s+unit*2,room.Height),format);
+    }
+   }
+   return b;
   }
   // Window icon: the color mark.
   public static Icon AppIcon(){using(Bitmap b=Logo(SystemInformation.IconSize.Width,false,Color.Empty))return ToIcon(b);}
@@ -296,6 +340,79 @@ namespace MagicKeyboard {
  }
 
  // Small status chip (keyboard / tray state) in the shared shape.
+ // Header status: connection, keyboard battery and tray in one rounded strip, split by thin
+ // dividers. Wide: icon and text per item. Compact (narrow window): the connection and
+ // tray shrink to their icon and the battery to its percentage; the full text is the
+ // item's tooltip.
+ sealed class StatusStrip:Control {
+  public sealed class Item {
+   public string Glyph="",Text="",Short="",Tip="";public bool On,Visible=true;
+   public bool Battery,Charging,Plugged;public int Percent;
+  }
+  public readonly Item Link=new Item{Glyph=""},Power=new Item{Battery=true,Visible=false},Tray=new Item();
+  readonly ToolTip tips=new ToolTip();Item tipped;
+  bool compact;
+  const int Pad=12,IconWidth=18,Space=7;
+  public StatusStrip(){SetStyle(ControlStyles.AllPaintingInWmPaint|ControlStyles.OptimizedDoubleBuffer|ControlStyles.UserPaint|ControlStyles.ResizeRedraw|ControlStyles.SupportsTransparentBackColor,true);BackColor=Color.Transparent;Height=Theme.ControlHeight;Font=new Font("Segoe UI Semibold",9f);Fit();}
+  public bool Compact{get{return compact;}set{if(compact==value)return;compact=value;Fit();}}
+  Item[] Items{get{return new[]{Link,Power,Tray};}}
+  string Label(Item i){return compact?i.Short:i.Text;}
+  // Width of each visible item; changes resize the control (the header lays out again).
+  int ItemWidth(Item i){string t=Label(i);int w=Pad*2+(i.Battery?20:IconWidth);if(t.Length>0)w+=Space+TextRenderer.MeasureText(t,Font).Width-6;return w;}
+  public void Fit(){int w=0;foreach(Item i in Items)if(i.Visible)w+=ItemWidth(i)+1;w=Math.Max(Height,w-1);if(Width!=w)Width=w;Invalidate();}
+  protected override void OnMouseMove(MouseEventArgs e){
+   int x=0;Item hit=null;
+   foreach(Item i in Items){if(!i.Visible)continue;int w=ItemWidth(i)+1;if(e.X>=x && e.X<x+w){hit=i;break;}x+=w;}
+   if(hit!=tipped){tipped=hit;tips.SetToolTip(this,hit==null?"":hit.Tip);}
+  }
+  protected override void OnPaint(PaintEventArgs e){
+   Graphics g=e.Graphics;g.SmoothingMode=SmoothingMode.AntiAlias;
+   Theme.Shape(g,this,Theme.Raised,Theme.Line);
+   int x=0;bool first=true;
+   using(Font glyphs=new Font(Theme.IconFamily,10.5f))
+   foreach(Item i in Items){
+    if(!i.Visible)continue;
+    if(!first)using(Pen line=new Pen(Theme.Line))g.DrawLine(line,x,8,x,Height-9);
+    if(!first)x+=1;
+    first=false;
+    int w=ItemWidth(i),ix=x+Pad,cy=Height/2;
+    if(i.Battery)DrawBattery(g,new RectangleF(ix,cy-5,17,10),i);
+    else if(i.Glyph.Length==0){
+     // Status dot: filled when on, a ring when off.
+     RectangleF dot=new RectangleF(ix+5,cy-4,8,8);
+     if(i.On)using(SolidBrush b=new SolidBrush(Theme.Good))g.FillEllipse(b,dot);
+     else using(Pen p=new Pen(Theme.Muted,1.4f))g.DrawEllipse(p,dot);
+    }
+    else{
+     Color tone=i.On?Theme.Good:Theme.Muted;
+     TextRenderer.DrawText(g,i.Glyph,glyphs,new Rectangle(ix-2,0,IconWidth+4,Height),tone,TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter|TextFormatFlags.NoPadding);
+    }
+    string t=Label(i);
+    if(t.Length>0){
+     Color ink=i.Battery&&!i.Charging&&i.Percent<=10?Theme.Bad:i.Battery||i.On?Theme.Ink:Theme.Muted;
+     TextRenderer.DrawText(g,t,Font,new Rectangle(ix+(i.Battery?20:IconWidth)+Space-3,0,w,Height),ink,TextFormatFlags.Left|TextFormatFlags.VerticalCenter|TextFormatFlags.NoPadding);
+    }
+    x+=w;
+   }
+  }
+  // A small horizontal battery: the keyboard's charge, a bolt while charging.
+  static void DrawBattery(Graphics g,RectangleF r,Item i){
+   Color tone=i.Charging?Theme.Good:i.Percent<=10?Theme.Bad:Theme.Ink;
+   RectangleF body=new RectangleF(r.X,r.Y,r.Width-2,r.Height);
+   using(GraphicsPath p=Theme.Round(body,2.5f))using(Pen edge=new Pen(Theme.Muted,1.2f))g.DrawPath(edge,p);
+   using(SolidBrush nub=new SolidBrush(Theme.Muted))g.FillRectangle(nub,body.Right+0.5f,r.Y+3,1.5f,r.Height-6);
+   float level=(body.Width-4)*Math.Max(0,Math.Min(100,i.Percent))/100f;
+   if(level>0)using(GraphicsPath p=Theme.Round(new RectangleF(body.X+2,body.Y+2,level,body.Height-4),1f))using(SolidBrush fill=new SolidBrush(tone))g.FillPath(fill,p);
+   if(i.Charging){
+    float cx=body.X+body.Width/2f,top=r.Y-2,h=r.Height+4;
+    PointF[] bolt={new PointF(cx+1.5f,top),new PointF(cx-3f,top+h*0.55f),new PointF(cx-0.2f,top+h*0.55f),new PointF(cx-1.5f,top+h),new PointF(cx+3f,top+h*0.42f),new PointF(cx+0.2f,top+h*0.42f)};
+    using(Pen halo=new Pen(Theme.Raised,1.6f))g.DrawPolygon(halo,bolt);
+    using(SolidBrush b=new SolidBrush(Theme.Ink))g.FillPolygon(b,bolt);
+   }
+  }
+  protected override void Dispose(bool disposing){if(disposing)tips.Dispose();base.Dispose(disposing);}
+ }
+
  sealed class Chip:Label {
   public Chip(){AutoSize=true;Padding=new Padding(10,7,10,7);Font=new Font("Segoe UI Semibold",9f);BackColor=Color.Transparent;TextAlign=ContentAlignment.MiddleCenter;}
   protected override void OnPaintBackground(PaintEventArgs e){Theme.Shape(e.Graphics,this,Theme.Raised,Theme.Line);}

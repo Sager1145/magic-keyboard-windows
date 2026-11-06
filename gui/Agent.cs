@@ -109,9 +109,10 @@ namespace MagicKeyboard {
    }catch(Exception e){driverText="Driver unavailable · "+e.Message;}
    WriteStatus();
   }
-  // The status file holds driver state and the battery (percent;charging), never keys or actions.
+  // The status file holds driver state and the battery (percent;charging;plugged in), never
+  // keys or actions.
   void WriteStatus(){
-   string level=battery.Valid?battery.Percent+";"+(battery.Charging?1:0):"";
+   string level=battery.Valid?battery.Percent+";"+(battery.Charging?1:0)+";"+(battery.PluggedIn?1:0):"";
    try{File.WriteAllText(StatusFile,driverText+"\n"+level);}catch(IOException){}catch(UnauthorizedAccessException){}
   }
   // Runs on a pool thread: HID GET_REPORT is a blocking USB / Bluetooth round trip.
@@ -120,6 +121,10 @@ namespace MagicKeyboard {
    try{
     BatteryReading r;
     try{r=Battery.Read();}catch(Exception){r=new BatteryReading();}
+    // Over USB, hand the level to the driver for Settings on every read: a replugged
+    // keyboard gets a new driver instance that has shown nothing yet, and the driver skips
+    // writing a level it already shows. An older driver without the request just fails it.
+    if(r.Valid && r.PluggedIn){try{Driver.PublishBattery(r.Percent);}catch(Exception){}}
     Post(()=>OnBattery(r));
     try{batteryPoll.Change(r.Valid && !r.Charging?BatteryIdleMs:BatteryChargingMs,System.Threading.Timeout.Infinite);}catch(ObjectDisposedException){}
    }finally{Interlocked.Exchange(ref polling,0);}
@@ -128,9 +133,17 @@ namespace MagicKeyboard {
   void ReadBatterySoon(int delayMs){if(batteryPoll!=null)try{batteryPoll.Change(delayMs,System.Threading.Timeout.Infinite);}catch(ObjectDisposedException){}}
   void OnPowerMode(object sender,Microsoft.Win32.PowerModeChangedEventArgs e){if(e.Mode==Microsoft.Win32.PowerModes.Resume)ReadBatterySoon(5000);}
   void OnBattery(BatteryReading r){
-   bool changed=r.Valid!=battery.Valid || r.Percent!=battery.Percent || r.Charging!=battery.Charging;
+   bool changed=r.Valid!=battery.Valid || r.Percent!=battery.Percent || r.Charging!=battery.Charging || r.PluggedIn!=battery.PluggedIn;
    battery=r;
-   if(tray!=null)tray.Text=r.Valid?Theme.ProductName+" · battery "+r:Theme.ProductName;
+   if(tray!=null){
+    // Names the keyboard so it isn't mistaken for the PC's battery (NotifyIcon text max 63).
+    tray.Text=r.Valid?"Magic Keyboard battery "+r:Theme.ProductName;
+    if(changed){
+     Icon old=tray.Icon,icon;
+     try{icon=r.Valid?Theme.BatteryTrayIcon(r.Percent,r.Charging):Theme.TrayIcon();}catch(Exception){icon=null;}
+     if(icon!=null){tray.Icon=icon;if(old!=null)old.Dispose();}
+    }
+   }
    if(r.Valid && !r.Charging && r.Percent<=10 && !lowWarned && tray!=null){
     lowWarned=true;
     tray.ShowBalloonTip(8000,"Magic Keyboard battery low",r.Percent+"% left. Connect the cable to charge.",ToolTipIcon.Warning);

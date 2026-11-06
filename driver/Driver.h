@@ -31,6 +31,22 @@ extern "C" {
 	#define IOCTL_MAGICKB_READ_EVENT CTL_CODE(0x9A4B, 0x801, METHOD_BUFFERED, FILE_READ_ACCESS)
 	#define IOCTL_MAGICKB_GET_CONFIG CTL_CODE(0x9A4B, 0x802, METHOD_BUFFERED, FILE_READ_ACCESS)
 	#define IOCTL_MAGICKB_SET_CONFIG CTL_CODE(0x9A4B, 0x803, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+	//   SET_BATTERY one UCHAR, 1-100: the charge the tray app read over USB (interface 0,
+	//               WinUSB). Written to the keyboard's USB device node and to its paired
+	//               Bluetooth one, so both Settings > Bluetooth & devices entries show the
+	//               same level. Over Bluetooth the driver reads it itself.
+	#define IOCTL_MAGICKB_SET_BATTERY CTL_CODE(0x9A4B, 0x804, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+	//   GET_BATTERY returns one MAGICKB_BATTERY: the last battery report a keyboard sent over
+	//               Bluetooth while its link is up (STATUS_NO_SUCH_DEVICE otherwise). The tray
+	//               app uses it instead of asking the keyboard: a GET_INPUT_REPORT sent to
+	//               HidBth can crash Windows (hidbth!HidBthGetReportFlowCompletion).
+	#define IOCTL_MAGICKB_GET_BATTERY CTL_CODE(0x9A4B, 0x805, METHOD_BUFFERED, FILE_READ_ACCESS)
+
+	typedef struct tagMAGICKB_BATTERY
+	{
+		UCHAR Level; // 1-100
+		UCHAR Status; // bit 0 present, bit 1 charging, bit 2 discharging
+	} MAGICKB_BATTERY;
 
 	#define MAGICKB_REPORT_LENGTH 10
 	#define MAGICKB_RING_LENGTH 64
@@ -100,12 +116,29 @@ extern "C" {
 		VHFHANDLE Vhf; // virtual HID device that carries the mapped actions (engine lock)
 		BOOLEAN EngineDetached; // removal started: reports pass through, Vhf is not used
 		UCHAR LockMask; // byte 9 bit of the top-right key: 0x08 Lock (0320), 0x01 Eject (0267)
-		// Bluetooth battery level shown by Windows (DEVPKEY_Bluetooth_Battery on the PDO).
+		BOOLEAN Bluetooth; // BTHENUM device; otherwise the USB keyboard interface
+		// Battery level shown by Windows (DEVPKEY_Bluetooth_Battery on the PDO): from the
+		// keyboard's report over Bluetooth, from the tray app (SET_BATTERY) over USB.
 		PIO_WORKITEM BatteryWork; // writes the property at PASSIVE_LEVEL
-		LONG BatteryShown; // level last written, 0 = none
-		LONG BatteryPending; // level to write next
+		LONG BatteryShown; // level last written: -1 not written yet, 0 = property removed
+		// Bluetooth only: the link is up (input reads complete) and the last battery report,
+		// Level | Status << 8 (0 = none since the link came up).
+		LONG BtLinkUp;
+		LONG BtBattery;
+		LONG BatteryPending; // level to write next, 0 = remove the property
 		LONG BatteryQueued; // 1 while BatteryWork is queued
+		// The keyboard's USB device node (USB\VID_05AC&PID_xxxx, below usbccgp; MagicKeyboardUsb.inf)
+		// rather than its keyboard interface. This filter only shortens the polling interval:
+		// no mapping, battery or control device.
+		BOOLEAN UsbDevice;
 	} DEVICE_EXTENSION, *PDEVICE_EXTENSION;
+
+	// USB polling: the keyboard asks for bInterval 8 (8 ms, 125 Hz) at full speed. The USB
+	// device filter rewrites interrupt IN endpoints to this many ms in the configuration
+	// descriptor, before usbccgp selects the configuration and the hub schedules the
+	// endpoints. 1 ms (1000 Hz) is the full-speed minimum. Measured: at 4 ms the keyboard
+	// delivered new reports at every poll.
+	#define MAGICKB_USB_INTERVAL_MS 1
 
 	NTSTATUS DriverEntry(IN PDRIVER_OBJECT driverObject, IN PUNICODE_STRING registryPath);
 	void DriverUnload(IN PDRIVER_OBJECT fido);

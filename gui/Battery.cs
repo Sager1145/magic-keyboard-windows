@@ -4,18 +4,18 @@ using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
 namespace MagicKeyboard {
- // Reads the Magic Keyboard's battery. Apple keyboards report it in input report 0x90
- // ([id][status][charge]) of a vendor collection that the host has to poll with
- // GET_REPORT. The fields are found by usage, not offset: Battery System page 0x85,
- // AbsoluteStateOfCharge 0x65 (percent) and Charging 0x44. Same method as Linux hid-apple.
- // Works over USB (vendor 05AC, interface 0) and Bluetooth (vendor 004C).
+ // Reads the Magic Keyboard's battery: input report 0x90, [0x90][status][charge 0-100].
+ // USB: interface 0 runs WinUSB, so the tray app asks for it with a HID class GET_REPORT.
+ // Bluetooth: the driver keeps the report the keyboard sends on its own while connected, and
+ // the tray app asks the driver (never the keyboard; see Read).
  public struct BatteryReading {
-  public bool Valid,Charging;public int Percent;
-  public override string ToString(){return Valid?Percent+"%"+(Charging?" · charging":""):"";}
+  // Charging comes from the same report as Percent. PluggedIn: read over the cable, which
+  // powers the keyboard, so a full battery there shows "plugged in" rather than nothing.
+  public bool Valid,Charging,PluggedIn;public int Percent;
+  public string State{get{return !Valid?"":Charging?"charging":PluggedIn?"plugged in":"on battery";}}
+  public override string ToString(){return Valid?Percent+"% · "+State:"";}
  }
  public static class Battery {
-  const ushort BatteryPage=0x85,Charge=0x65,Charging=0x44;
-  const int HidpInput=0,HidpSuccess=0x00110000;
   static readonly Guid HidClass=new Guid("4d1e55b2-f16f-11cf-88cb-001111000030");
 
   [DllImport("setupapi.dll",SetLastError=true)] static extern IntPtr SetupDiGetClassDevs(ref Guid cls,IntPtr enumerator,IntPtr parent,int flags);
@@ -23,13 +23,6 @@ namespace MagicKeyboard {
   [DllImport("setupapi.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern bool SetupDiGetDeviceInterfaceDetail(IntPtr set,ref InterfaceData data,IntPtr detail,int size,out int required,IntPtr info);
   [DllImport("setupapi.dll")] static extern bool SetupDiDestroyDeviceInfoList(IntPtr set);
   [DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern SafeFileHandle CreateFile(string name,uint access,uint share,IntPtr security,uint creation,uint flags,IntPtr template);
-  [DllImport("hid.dll")] static extern bool HidD_GetPreparsedData(SafeFileHandle device,out IntPtr data);
-  [DllImport("hid.dll")] static extern bool HidD_FreePreparsedData(IntPtr data);
-  [DllImport("hid.dll")] static extern bool HidD_GetInputReport(SafeFileHandle device,byte[] report,int length);
-  [DllImport("hid.dll")] static extern int HidP_GetCaps(IntPtr data,byte[] caps);
-  [DllImport("hid.dll")] static extern int HidP_GetSpecificValueCaps(int type,ushort page,ushort link,ushort usage,byte[] caps,ref ushort length,IntPtr data);
-  [DllImport("hid.dll")] static extern int HidP_GetUsageValue(int type,ushort page,ushort link,ushort usage,out uint value,IntPtr data,byte[] report,int length);
-  [DllImport("hid.dll")] static extern int HidP_GetUsages(int type,ushort page,ushort link,ushort[] usages,ref int length,IntPtr data,byte[] report,int length2);
   [StructLayout(LayoutKind.Sequential)] struct InterfaceData {public int Size;public Guid Class;public int Flags;public IntPtr Reserved;}
 
   // How the keyboard is connected: "usb", "bluetooth", or null when it isn't. USB wins
@@ -106,41 +99,17 @@ namespace MagicKeyboard {
    r.Percent=report[2];r.Charging=(report[1]&2)!=0;r.Valid=true;return r;
   }
 
-  // The keyboard's battery: USB first, then any Apple HID collection (Bluetooth).
+  // The keyboard's battery: USB first (WinUSB on interface 0), then the last report the
+  // keyboard itself sent over Bluetooth, which the driver keeps while the link is up. Never
+  // a GET_REPORT over Bluetooth: HidBth can crash Windows on one
+  // (hidbth!HidBthGetReportFlowCompletion dereferences a missing MDL).
   public static BatteryReading Read(){
    BatteryReading usb=FromUsb(UsbReport());
-   if(usb.Valid)return usb;
-   foreach(string path in ApplePaths()){
-    BatteryReading r=ReadPath(path);
-    if(r.Valid)return r;
-   }
-   return new BatteryReading();
-  }
-
-  static BatteryReading ReadPath(string path){
+   if(usb.Valid){usb.PluggedIn=true;return usb;}
    BatteryReading r=new BatteryReading();
-   SafeFileHandle device=CreateFile(path,0xC0000000,3,IntPtr.Zero,3,0,IntPtr.Zero);
-   if(device.IsInvalid){device.Dispose();device=CreateFile(path,0,3,IntPtr.Zero,3,0,IntPtr.Zero);}
-   using(device){
-    if(device.IsInvalid)return r;
-    IntPtr data;
-    if(!HidD_GetPreparsedData(device,out data))return r;
-    try{
-     ushort count=1;byte[] valueCaps=new byte[72];
-     if(HidP_GetSpecificValueCaps(HidpInput,BatteryPage,0,Charge,valueCaps,ref count,data)!=HidpSuccess || count==0)return r;
-     byte[] caps=new byte[64];HidP_GetCaps(data,caps);
-     byte[] report=new byte[Math.Max(3,(int)BitConverter.ToUInt16(caps,4))];
-     report[0]=valueCaps[2]; // report ID (0x90)
-     if(!HidD_GetInputReport(device,report,report.Length))return r;
-     uint percent;
-     if(HidP_GetUsageValue(HidpInput,BatteryPage,0,Charge,out percent,data,report,report.Length)!=HidpSuccess)return r;
-     if(percent<1 || percent>100)return r; // 0 or out of range: no reading yet
-     ushort[] on=new ushort[16];int length=on.Length;
-     if(HidP_GetUsages(HidpInput,BatteryPage,0,on,ref length,data,report,report.Length)==HidpSuccess)
-      for(int i=0;i<length;i++)if(on[i]==Charging)r.Charging=true;
-     r.Percent=(int)percent;r.Valid=true;
-    }finally{HidD_FreePreparsedData(data);}
-   }
+   byte[] bt=null;
+   try{bt=Driver.BluetoothBattery();}catch(Exception){}
+   if(bt!=null && bt[0]>=1 && bt[0]<=100){r.Percent=bt[0];r.Charging=(bt[1]&2)!=0;r.Valid=true;}
    return r;
   }
  }

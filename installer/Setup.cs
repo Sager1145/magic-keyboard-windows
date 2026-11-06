@@ -14,13 +14,54 @@ using System.Windows.Forms;
 using Microsoft.Win32;
 
 namespace MagicKeyboardSetup {
+ // Removes MagicKeyboardFn from the LowerFilters of the keyboard's USB device nodes
+ // (USB\VID_05AC&PID_0320\<serial>, PID_0267), present or not. MagicKeyboardUsb.inf adds it
+ // there; uninstalling that package should take it away, and this makes sure: a filter left
+ // behind after the service is gone stops the keyboard's USB device from starting.
+ // Returns the device IDs it changed. Needs administrator rights.
+ public static class UsbFilters {
+  const int CR_SUCCESS=0,CM_GETIDLIST_FILTER_ENUMERATOR=1,CM_LOCATE_DEVNODE_PHANTOM=1,CM_DRP_LOWERFILTERS=0x13;
+  [DllImport("cfgmgr32.dll",CharSet=CharSet.Unicode)] static extern int CM_Get_Device_ID_List_SizeW(out int length,string filter,int flags);
+  [DllImport("cfgmgr32.dll",CharSet=CharSet.Unicode)] static extern int CM_Get_Device_ID_ListW(string filter,char[] buffer,int length,int flags);
+  [DllImport("cfgmgr32.dll",CharSet=CharSet.Unicode)] static extern int CM_Locate_DevNodeW(out int devInst,string id,int flags);
+  [DllImport("cfgmgr32.dll",CharSet=CharSet.Unicode)] static extern int CM_Get_DevNode_Registry_PropertyW(int devInst,int property,out int type,byte[] buffer,ref int length,int flags);
+  [DllImport("cfgmgr32.dll",CharSet=CharSet.Unicode)] static extern int CM_Set_DevNode_Registry_PropertyW(int devInst,int property,byte[] buffer,int length,int flags);
+  public static string[] Clear(){
+   var changed=new System.Collections.Generic.List<string>();
+   int length;
+   if(CM_Get_Device_ID_List_SizeW(out length,"USB",CM_GETIDLIST_FILTER_ENUMERATOR)!=CR_SUCCESS || length<2)return changed.ToArray();
+   char[] buffer=new char[length];
+   if(CM_Get_Device_ID_ListW("USB",buffer,length,CM_GETIDLIST_FILTER_ENUMERATOR)!=CR_SUCCESS)return changed.ToArray();
+   foreach(string id in new string(buffer).Split(new[]{'\0'},StringSplitOptions.RemoveEmptyEntries)){
+    string upper=id.ToUpperInvariant();
+    if(!(upper.StartsWith(@"USB\VID_05AC&PID_0320\") || upper.StartsWith(@"USB\VID_05AC&PID_0267\")))continue;
+    int dev;
+    if(CM_Locate_DevNodeW(out dev,id,CM_LOCATE_DEVNODE_PHANTOM)!=CR_SUCCESS)continue;
+    int type,size=0;
+    CM_Get_DevNode_Registry_PropertyW(dev,CM_DRP_LOWERFILTERS,out type,null,ref size,0);
+    if(size<=0)continue;
+    byte[] data=new byte[size];
+    if(CM_Get_DevNode_Registry_PropertyW(dev,CM_DRP_LOWERFILTERS,out type,data,ref size,0)!=CR_SUCCESS)continue;
+    string[] filters=System.Text.Encoding.Unicode.GetString(data,0,size).Split(new[]{'\0'},StringSplitOptions.RemoveEmptyEntries);
+    string[] kept=Array.FindAll(filters,f=>!f.Equals("MagicKeyboardFn",StringComparison.OrdinalIgnoreCase));
+    if(kept.Length==filters.Length)continue;
+    int result;
+    if(kept.Length==0)result=CM_Set_DevNode_Registry_PropertyW(dev,CM_DRP_LOWERFILTERS,null,0,0);
+    else{byte[] value=System.Text.Encoding.Unicode.GetBytes(string.Join("\0",kept)+"\0\0");result=CM_Set_DevNode_Registry_PropertyW(dev,CM_DRP_LOWERFILTERS,value,value.Length,0);}
+    if(result==CR_SUCCESS)changed.Add(id);
+   }
+   return changed.ToArray();
+  }
+ }
+
  // One-file installer: carries the MagicKeyboardFn driver package and the settings tray
  // as embedded resources and installs them like installer\Install-MagicKeyboardFn.ps1.
  sealed class SetupForm:Form {
-  static readonly string[] Files={"MagicKeyboardFn.inf","MagicKeyboardFn.sys","magickeyboardfn.cat","MagicKeyboardFn.cer","MagicKeyboardControls.exe"};
+  static readonly string[] Files={"MagicKeyboardFn.inf","MagicKeyboardFn.sys","magickeyboardfn.cat","MagicKeyboardFn.cer","MagicKeyboardControls.exe","MagicKeyboardUsb.inf","magickeyboardusb.cat"};
   // Supported keyboards: 0320 USB-C Magic Keyboard, 0267 Magic Keyboard 2 (2015).
   static readonly string[] ProductIds={"0320","0267"};
   static string HardwareId(string pid){return @"USB\VID_05AC&PID_"+pid+"&MI_01";}
+  static string DeviceId(string pid){return @"USB\VID_05AC&PID_"+pid;} // the whole USB device (MagicKeyboardUsb.inf)
   static string AuxHardwareId(string pid){return @"USB\VID_05AC&PID_"+pid+"&MI_00";}
   static string BluetoothId(string pid){return @"BTHENUM\{00001124-0000-1000-8000-00805f9b34fb}_VID&0001004c_PID&"+pid;}
   static string ModelName(string pid){return pid=="0267"?"Magic Keyboard 2":"keyboard";}
@@ -154,6 +195,21 @@ namespace MagicKeyboardSetup {
     if(UpdateDriverForPlugAndPlayDevices(IntPtr.Zero,BluetoothId(pid),inf,1,out btReboot)){reboot|=btReboot;any=true;Log("Installed the driver on the "+ModelName(pid)+"'s Bluetooth connection.");}
    }
    if(!any)Log("No keyboard connected. The driver installs automatically when you connect it.");
+   // 4 ms USB polling: a second INF puts the same driver below the USB composite driver on the
+   // keyboard's USB device. It doesn't create the MagicKeyboardFn service (the main INF does,
+   // when it installs on a keyboard), so it is added only once that service exists: staged
+   // without it, it would claim the keyboard's USB device at the next plug-in and fail to
+   // start it, and the keyboard interface (which creates the service) would never appear.
+   // Optional, so a failure here is logged and the install goes on.
+   string usbInf=Path.Combine(folder,"MagicKeyboardUsb.inf");
+   bool service;using(RegistryKey key=Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\MagicKeyboardFn"))service=key!=null;
+   if(!service)Log("4 ms USB polling not added yet: connect the keyboard and run Setup again.");
+   else if((output=Exec("pnputil.exe","/add-driver \""+usbInf+"\"",out exit))!=null && exit!=0 && exit!=3010)Log("4 ms USB polling not added (pnputil "+exit+").");
+   else foreach(string pid in ProductIds){
+    bool pollReboot;
+    if(UpdateDriverForPlugAndPlayDevices(IntPtr.Zero,DeviceId(pid),usbInf,1,out pollReboot)){reboot|=pollReboot;Log("Set the "+ModelName(pid)+" to 4 ms USB polling.");}
+    else{int error=Marshal.GetLastWin32Error();if(error!=unchecked((int)0xE000020B))Log("4 ms USB polling not set on the "+ModelName(pid)+": "+new Win32Exception(error).Message);}
+   }
    try{Directory.Delete(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"MagicKeyboardControls"),true);}catch(Exception){}
    // Start menu entry "Orchard Keys", pointing at this version (driver store paths change per version).
    try{
@@ -235,17 +291,29 @@ namespace MagicKeyboardSetup {
    return all;
   }
 
-  void Uninstall(){
-   foreach(Process p in Process.GetProcessesByName("MagicKeyboardControls")){try{p.Kill();p.WaitForExit(3000);}catch(Exception){}}
+  // Deletes every published copy (oemN.inf) of a package INF and uninstalls it from devices.
+  bool DeleteDriverPackage(string originalName){
    int exit;string list=Exec("pnputil.exe","/enum-drivers",out exit);
    string published=null;bool removed=false;
    foreach(string line in list.Split('\n')){
     Match oem=Regex.Match(line,@":\s+(oem\d+\.inf)\s*$");
     if(oem.Success){published=oem.Groups[1].Value;continue;}
-    if(published!=null && Regex.IsMatch(line,@":\s+magickeyboardfn\.inf\s*$",RegexOptions.IgnoreCase)){
+    if(published!=null && Regex.IsMatch(line,@":\s+"+Regex.Escape(originalName)+@"\s*$",RegexOptions.IgnoreCase)){
      Log(Exec("pnputil.exe","/delete-driver "+published+" /uninstall /force",out exit).Trim());removed=true;published=null;
     }
    }
+   return removed;
+  }
+
+  void Uninstall(){
+   foreach(Process p in Process.GetProcessesByName("MagicKeyboardControls")){try{p.Kill();p.WaitForExit(3000);}catch(Exception){}}
+   int exit;
+   // The USB polling package first, while the driver service still exists, then any
+   // LowerFilters entry it left on the keyboard's USB device: a filter whose service is gone
+   // would stop that device (and the keyboard) from starting. Then the main package.
+   bool removed=DeleteDriverPackage("magickeyboardusb.inf");
+   foreach(string id in UsbFilters.Clear())Log("Removed the driver from "+id+".");
+   removed|=DeleteDriverPackage("magickeyboardfn.inf");
    using(RegistryKey run=Registry.LocalMachine.OpenSubKey(RunKey,true)){if(run!=null)run.DeleteValue("MagicKeyboardControls",false);}
    try{File.Delete(Shortcut);}catch(Exception){}
    // Stop trusting the test certificate Install added.

@@ -27,7 +27,7 @@ namespace MagicKeyboard {
 
   Configuration draft;ActionRunner runner;
   KeyboardRow keyboard;Segmented mode,press;RoundCombo action;Field valueField;TextBox value;RoundButton valueButton,tryIt,reset;
-  Label title,subtitle,valueLabel,hint,error,status,live;Chip driverPill,trayPill,batteryPill;Stepper holdTime;FlowLayoutPanel holdRow;
+  Label title,subtitle,valueLabel,hint,error,status,live;StatusStrip strip;Label modeCaption;Stepper holdTime;FlowLayoutPanel holdRow;
   TableLayoutPanel editor,titleRow,footer;Panel header;Label modHint;RoundButton restore;
   ModifierRow modifiers;Segmented actsAs;Label actionLabel;FlowLayoutPanel modRow;
   bool filling;int key,gesture,lastAction=-1;
@@ -53,7 +53,6 @@ namespace MagicKeyboard {
   }
 
   static Label MakeLabel(string text,float size,FontStyle style,Color color){return new Label{Text=text,AutoSize=true,Font=new Font("Segoe UI",size,style),ForeColor=color,BackColor=Color.Transparent};}
-  static Chip Pill(){return new Chip{Margin=new Padding(0)};}
   static RoundButton FlatButton(string text,bool primary){return new RoundButton(text,primary);}
   static Panel Card(Control content){
    Panel card=new Panel{Dock=DockStyle.Fill,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,BackColor=Theme.Back,Padding=new Padding(20,16,20,16),Margin=new Padding(0,0,0,12)};
@@ -78,17 +77,18 @@ namespace MagicKeyboard {
 
    // Header: name, live status, top-row mode
    // Laid out by LayoutHeader, so its height is exactly what it shows at any width.
-   header=new Panel{Dock=DockStyle.Fill,Height=60,Margin=new Padding(0,0,0,12),BackColor=Theme.Back};
-   int mark=(int)(40*DeviceDpi/96f);
-   header.Controls.Add(new PictureBox{Image=Theme.Logo(mark,false,Color.Empty),Size=new Size(mark,mark)});
-   header.Controls.Add(MakeLabel(Theme.ProductName,20,FontStyle.Bold,Theme.Ink));
-   driverPill=Pill();trayPill=Pill();batteryPill=Pill();batteryPill.Visible=false;header.Controls.Add(driverPill);header.Controls.Add(batteryPill);header.Controls.Add(trayPill);
+   header=new Panel{Dock=DockStyle.Fill,Height=60,Margin=new Padding(0,0,0,14),BackColor=Theme.Back};
+   strip=new StatusStrip();
    mode=new Segmented{Items=new[]{"F1–F12 first","Actions first"},Width=330,Font=Font};
    mode.Selected=draft.RequireFn?0:1;
    mode.SelectedChanged+=(s,e)=>{if(filling)return;draft.RequireFn=mode.Selected==0;keyboard.ActionsFirst=!draft.RequireFn;Select(key,gesture);Changed();};
-   header.Controls.Add(mode);
+   chipTips.SetToolTip(mode,"What the top row does without Fn: F1–F12, or the actions you set below.");
+   modeCaption=MakeLabel("Top row",9.75f,FontStyle.Regular,Theme.Muted);
+   header.Controls.AddRange(new Control[]{strip,modeCaption,mode});
    header.Resize+=(s,e)=>LayoutHeader();
-   foreach(Control chip in new Control[]{driverPill,batteryPill,trayPill}){chip.SizeChanged+=(s,e)=>LayoutHeader();chip.VisibleChanged+=(s,e)=>LayoutHeader();}
+   strip.SizeChanged+=(s,e)=>LayoutHeader();
+   // A hairline under the header separates it from the keys.
+   header.Paint+=(s,e)=>{using(Pen line=new Pen(Theme.Line))e.Graphics.DrawLine(line,0,header.Height-1,header.Width,header.Height-1);};
    page.Controls.Add(header,0,0);
 
    // Keyboard: the top row (F1-F12, lock) as clickable keycaps
@@ -180,26 +180,38 @@ namespace MagicKeyboard {
 
   // Fits the layout to the window width: the mode switch moves under the name when the
   // header is narrow, wide switches shrink, and text wraps to the card.
-  // Logo, name and status chips flow left to right, wrapping when the header is narrow;
-  // the mode switch sits at the right of the first line, or on its own line below.
+  // Header: one row at the top, or two when narrow.
+  //  wide:   [status strip]                 Top row [mode switch]
+  //  narrow: [status strip]
+  //          Top row [mode switch, to the right edge]
+  // The status strip turns compact (icons and percentage) only when its full form doesn't
+  // fit the row it is on.
   bool layingOut;
   void LayoutHeader(){
    if(header==null || layingOut)return;
    layingOut=true;
    try{
-    int width=Math.Max(120,header.ClientSize.Width),line=48,gap=10,x=0,y=0;
-    foreach(Control c in header.Controls){
-     if(c==mode || !c.Visible)continue;
-     if(x>0 && x+c.Width>width){x=0;y+=line+6;}
-     c.Location=new Point(x,y+(line-c.Height)/2);
-     x+=c.Width+gap;
+    int width=Math.Max(160,header.ClientSize.Width),gap=12,rowGap=10,modeWide=330;
+    int captionWidth=modeCaption.PreferredWidth+gap;
+    strip.Compact=false;
+    bool oneRow=strip.Width+gap*2+captionWidth+modeWide<=width;
+    if(!oneRow && strip.Width>width)strip.Compact=true;
+    int line=Math.Max(strip.Height,mode.Height),y;
+    if(oneRow){
+     strip.Location=new Point(0,1+(line-strip.Height)/2);
+     mode.Width=modeWide;
+     mode.Location=new Point(width-modeWide,(line-mode.Height)/2);
+     y=line;
+    }else{
+     strip.Location=new Point(0,1);
+     mode.Width=Math.Max(160,Math.Min(modeWide,width-captionWidth));
+     mode.Location=new Point(captionWidth,strip.Bottom+rowGap);
+     y=mode.Bottom;
     }
-    int modeWidth=Math.Min(330,width);
-    mode.Width=modeWidth;
-    if(y==0 && x+modeWidth+14<=width)mode.Location=new Point(width-modeWidth,(line-mode.Height)/2);
-    else{y+=line+6;mode.Location=new Point(0,y);line=mode.Height;}
-    int height=y+line;
+    modeCaption.Location=new Point(mode.Left-captionWidth,mode.Top+(mode.Height-modeCaption.PreferredHeight)/2);
+    int height=y+15; // room above the hairline
     if(header.Height!=height)header.Height=height;
+    header.Invalidate();
    }finally{layingOut=false;}
   }
 
@@ -374,26 +386,33 @@ namespace MagicKeyboard {
    try{link=Battery.Link();}catch(Exception){}
    // The chip names the connection; the driver maps keys the same way over both.
    string name=link=="bluetooth"?"Bluetooth":"USB";
-   if(link==null && !driver)SetPill(driverPill,false,"Keyboard not connected");
-   else SetPill(driverPill,driver,driver?name+" connected":name+" · driver not running");
-   string why=link==null && !driver?"":driver
+   StatusStrip.Item l=strip.Link;
+   l.Glyph=link=="bluetooth"?"":link=="usb"?"":""; // Bluetooth, USB, keyboard
+   l.On=driver && link!=null;
+   l.Text=link==null && !driver?"Not connected":driver?name+" connected":name+" · driver off";
+   l.Short=link==null && !driver?"Off":"";
+   l.Tip=link==null && !driver?"Connect the keyboard with the cable or over Bluetooth.":driver
     ?(link=="bluetooth"?"Connected over Bluetooth.":"Connected with the cable.")+" The Orchard Keys driver is mapping keys."
     :"The keyboard is connected but the Orchard Keys driver isn't running on this connection. Reconnect the keyboard or restart Windows.";
-   if(chipTips.GetToolTip(driverPill)!=why)chipTips.SetToolTip(driverPill,why);
    bool tray=AgentWindow.Running();
-   SetPill(trayPill,tray,tray?"Tray on":"Tray off");
+   StatusStrip.Item t=strip.Tray;
+   t.On=tray;t.Text=tray?"Tray on":"Tray off";t.Short="Tray";
+   t.Tip=tray?"The tray app is running: app actions, battery and the live key view work.":"The tray app isn't running. Keys still work; open Orchard Keys from the Start menu to start it.";
    ShowBattery(tray);
+   strip.Fit();
   }
-  // Battery level as last read by the tray app (status line 2: percent;charging).
+  // Battery as last read by the tray app (status line 2: percent;charging;plugged in).
   void ShowBattery(bool tray){
    string[] f=new string[0];
    if(tray){try{string[] lines=File.ReadAllText(AgentWindow.StatusFile).Split('\n');if(lines.Length>=2)f=lines[1].Trim().Split(';');}catch(IOException){}catch(UnauthorizedAccessException){}}
+   StatusStrip.Item b=strip.Power;
    int percent;
-   if(f.Length<2 || !int.TryParse(f[0],out percent)){batteryPill.Visible=false;return;}
-   bool charging=f[1]=="1";
-   batteryPill.Text=(charging?"\u26A1 ":"")+"Battery "+percent+"%";
-   batteryPill.ForeColor=!charging && percent<=10?Theme.Bad:charging?Theme.Good:Theme.Ink;
-   batteryPill.Visible=true;
+   if(f.Length<2 || !int.TryParse(f[0],out percent)){b.Visible=false;return;}
+   b.Charging=f[1]=="1";b.Plugged=f.Length>=3 && f[2]=="1";b.Percent=percent;
+   b.Short=percent+"%";
+   b.Text=percent+"%"+(b.Charging?" · Charging":b.Plugged?" · Plugged in":"");
+   b.Tip="Keyboard battery "+percent+"%"+(b.Charging?", charging.":b.Plugged?", plugged in, not charging.":", on battery.");
+   b.Visible=true;
   }
   const string LiveIdle="Press a function key to see it here.";
   // Keys the tray app reports while this window is open (LiveKeys); shown only while held.
@@ -414,10 +433,6 @@ namespace MagicKeyboard {
    if(k<12)return (draft.RequireFn?fn:!fn)?Actions.Name(draft.Keys[k]):"F"+(k+1);
    if(k==13)return "tap: "+Actions.Name(draft.Keys[13]);
    return Summary(12);
-  }
-  static void SetPill(Label pill,bool ok,string text){
-   pill.Text=(ok?"● ":"○ ")+text;
-   pill.ForeColor=ok?Theme.Good:Theme.Muted;
   }
   void SetStatus(string text){if(IsDisposed)return;if(InvokeRequired){BeginInvoke((Action)(()=>SetStatus(text)));return;}status.ForeColor=Theme.Muted;status.Text=text;}
   protected override void Dispose(bool disposing){if(disposing){statusPoll.Dispose();apply.Dispose();chipTips.Dispose();}base.Dispose(disposing);}
