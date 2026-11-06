@@ -125,6 +125,10 @@ extern "C" {
 		// Level | Status << 8 (0 = none since the link came up).
 		LONG BtLinkUp;
 		LONG BtBattery;
+		// Bluetooth only: the L2CAP channel (the HID control channel) on which HidBth has a
+		// GET_REPORT outstanding. Its reply arrives as an inbound DATA (0xA1) transfer just like
+		// input, and belongs to whoever asked: it is passed through untouched.
+		PVOID volatile BtGetReportChannel;
 		LONG BatteryPending; // level to write next, 0 = remove the property
 		LONG BatteryQueued; // 1 while BatteryWork is queued
 		// The keyboard's USB device node (USB\VID_05AC&PID_xxxx, below usbccgp; MagicKeyboardUsb.inf)

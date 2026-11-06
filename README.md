@@ -13,7 +13,10 @@ the system tray, is for customizing.
   Keyboard 2, the **Eject** key does the Lock key's job. The Touch ID and numeric-keypad
   models aren't supported yet.
 - **Windows:** Windows 10 or 11, 64-bit (x64).
-- **Latest version:** [Releases](https://github.com/Sager1145/magic-keyboard-windows/releases).
+- **Latest version:** [1.2.2](https://github.com/Sager1145/magic-keyboard-windows/releases/tag/v1.2.2),
+  a bug-fix release: the battery level no longer drops out of Settings over Bluetooth, and
+  removing the keyboard while Fn or Lock is held no longer fires a stray action. See the
+  [changelog](CHANGELOG.md).
 
 ## What you get
 
@@ -126,7 +129,8 @@ administrator) and restart.
 - **No battery level in Windows' Bluetooth list:** over Bluetooth, Windows shows it after the
   keyboard reports its level on its own, which it does when it connects and when the level
   changes. The Bluetooth entry shows no level while the keyboard isn't connected over
-  Bluetooth (for example while it's on the cable).
+  Bluetooth (for example while it's on the cable). Before 1.2.2 the level could also vanish
+  while connected, whenever another program's report request timed out.
 
 ## How it works
 
@@ -138,7 +142,8 @@ same, for every key:
    stack and reads each key report before Windows sees it.
    - **Over USB**, it filters the keyboard's USB interface.
    - **Over Bluetooth**, it sits below Windows' Bluetooth HID driver and reads the
-     keyboard's HID packets.
+     keyboard's HID packets. Replies to report requests on the control channel pass
+     through untouched; only the keyboard's own input is mapped.
    - The keyboard sends the same report both ways, so one mapping engine handles both. It
      remaps the modifiers, removes the keys that trigger actions, and runs those actions.
 2. **The actions** go out through a virtual keyboard, made with Windows' own
@@ -182,7 +187,7 @@ ISO mounted (any drive letter, or set `EWDK` to its root) and the .NET Framework
 that comes with Windows. From the repository root:
 
 ```powershell
-.\Build-Package.ps1 -Version 1.2.1   # tray app, signed driver package, release assets in dist\
+.\Build-Package.ps1 -Version 1.2.2   # tray app, signed driver package, release assets in dist\
 ```
 
 `driver\Build.cmd` signs with a local WDK test certificate whose thumbprint is set in the

@@ -422,10 +422,15 @@ static VOID TimerDpc(PKDPC dpc, PVOID context, PVOID arg1, PVOID arg2)
 	UNREFERENCED_PARAMETER(arg1);
 	UNREFERENCED_PARAMETER(arg2);
 	KeAcquireSpinLockAtDpcLevel(&g_EngineLock);
-	ULONG now = NowMs();
-	UpdateGesture(MAGICKB_GESTURE_LOCK, g_LockDown, FALSE, now);
-	UpdateGesture(MAGICKB_GESTURE_FN, g_FnDown, FALSE, now);
-	ArmTimer();
+	// No keyboard attached (EngineDetach cancelled the timer while this DPC was already
+	// queued): don't fire gestures or re-arm, so no timer outlives the keyboard or the driver.
+	if (g_Vhf)
+	{
+		ULONG now = NowMs();
+		UpdateGesture(MAGICKB_GESTURE_LOCK, g_LockDown, FALSE, now);
+		UpdateGesture(MAGICKB_GESTURE_FN, g_FnDown, FALSE, now);
+		ArmTimer();
+	}
 	KeReleaseSpinLockFromDpcLevel(&g_EngineLock);
 }
 
@@ -444,6 +449,8 @@ static void ResetState(void)
 		}
 	}
 	RtlZeroMemory(g_Gesture, sizeof(g_Gesture));
+	// A Fn or Lock key held when the keyboard went away is not held any more.
+	g_FnDown = g_LockDown = FALSE;
 	g_KeyMods = 0;
 	RtlZeroMemory(g_Keys, sizeof(g_Keys));
 	RtlZeroMemory(g_Consumer, sizeof(g_Consumer));

@@ -641,6 +641,9 @@ NTSTATUS DispatchPnp(IN PDEVICE_OBJECT fido, IN PIRP irp)
 
 	if (fcn == IRP_MN_SURPRISE_REMOVAL && !pdx->UsbDevice)
 		EngineDetach(pdx, FALSE);
+	// A GET_REPORT mark never survives a stop/start or removal (channel handles get reused).
+	if (fcn == IRP_MN_START_DEVICE || fcn == IRP_MN_SURPRISE_REMOVAL)
+		InterlockedExchangePointer(&pdx->BtGetReportChannel, NULL);
 
 	//Handle remove device specially in order to cleanup device stack
 	if (fcn == IRP_MN_REMOVE_DEVICE)
@@ -872,6 +875,28 @@ NTSTATUS BthComplete(PDEVICE_OBJECT device, PIRP irp, PVOID context)
     PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(irp);
     struct _BRB_L2CA_ACL_TRANSFER* transfer = (struct _BRB_L2CA_ACL_TRANSFER*)stack->Parameters.Others.Argument1;
 
+    // The reply to a GET_REPORT (or its failure, e.g. a timeout) on the control channel:
+    // not a key press and not a link change. Leave it exactly as HidBth's GetReport flow
+    // expects it. Only a completion that ends the transaction uses the mark up: a failure,
+    // a HANDSHAKE (0x0X) or DATA (0xAX). An empty successful read leaves it for the reply.
+    BOOLEAN replyLike = !NT_SUCCESS(irp->IoStatus.Status);
+    if (!replyLike && transfer && transfer->BufferSize >= 1)
+    {
+        UCHAR* header = (UCHAR*)transfer->Buffer;
+        if (!header && transfer->BufferMDL)
+            header = MmGetSystemAddressForMdlSafe(transfer->BufferMDL, NormalPagePriority | MdlMappingNoExecute);
+        replyLike = header && ((header[0] & 0xF0) == 0x00 || (header[0] & 0xF0) == 0xA0);
+    }
+    if (replyLike && transfer && transfer->ChannelHandle &&
+        InterlockedCompareExchangePointer(&extension->BtGetReportChannel, NULL, transfer->ChannelHandle) ==
+            transfer->ChannelHandle)
+    {
+        if (irp->PendingReturned)
+            IoMarkIrpPending(irp);
+        IoReleaseRemoveLock(&extension->RemoveLock, irp);
+        return STATUS_CONTINUE_COMPLETION;
+    }
+
     if (NT_SUCCESS(irp->IoStatus.Status) && transfer)
     {
         // Bytes received: bthddi.h updates BufferSize to the bytes read for short transfers,
@@ -901,7 +926,9 @@ NTSTATUS BthComplete(PDEVICE_OBJECT device, PIRP irp, PVOID context)
     else if (InterlockedExchange(&extension->BtLinkUp, 0))
     {
         // A failed read (disconnect, out of range, removal): the link is down. Forget the
-        // level and remove it from Settings rather than show a stale one.
+        // level and remove it from Settings rather than show a stale one. A GET_REPORT
+        // mark can't outlive the link: its channel handle may be reused after reconnect.
+        InterlockedExchangePointer(&extension->BtGetReportChannel, NULL);
         InterlockedExchange(&extension->BtBattery, 0);
         QueueBattery(extension, 0);
     }
@@ -1006,12 +1033,22 @@ NTSTATUS DispatchInternalIoctl(PDEVICE_OBJECT device, PIRP irp)
     if (stack->Parameters.DeviceIoControl.IoControlCode == IOCTL_INTERNAL_BTH_SUBMIT_BRB)
     {
         struct _BRB_HEADER* brb = (struct _BRB_HEADER*)stack->Parameters.Others.Argument1;
-        if (brb && brb->Type == BRB_L2CA_ACL_TRANSFER &&
-            (((struct _BRB_L2CA_ACL_TRANSFER*)brb)->TransferFlags & ACL_TRANSFER_DIRECTION_IN))
+        struct _BRB_L2CA_ACL_TRANSFER* transfer = (struct _BRB_L2CA_ACL_TRANSFER*)brb;
+        if (brb && brb->Type == BRB_L2CA_ACL_TRANSFER && (transfer->TransferFlags & ACL_TRANSFER_DIRECTION_IN))
         {
             IoCopyCurrentIrpStackLocationToNext(irp);
             IoSetCompletionRoutine(irp, BthComplete, extension, TRUE, TRUE, TRUE);
             return IoCallDriver(extension->LowerDeviceObject, irp);
+        }
+        // Outbound: note a HID GET_REPORT (transaction type 0x4) so its reply on the same
+        // channel passes through untouched (BthComplete). The header byte is only read.
+        if (brb && brb->Type == BRB_L2CA_ACL_TRANSFER && transfer->BufferSize >= 1 && transfer->ChannelHandle)
+        {
+            UCHAR* data = (UCHAR*)transfer->Buffer;
+            if (!data && transfer->BufferMDL)
+                data = MmGetSystemAddressForMdlSafe(transfer->BufferMDL, NormalPagePriority | MdlMappingNoExecute);
+            if (data && (data[0] & 0xF0) == 0x40)
+                InterlockedExchangePointer(&extension->BtGetReportChannel, transfer->ChannelHandle);
         }
     }
 
