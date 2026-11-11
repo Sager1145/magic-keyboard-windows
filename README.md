@@ -48,8 +48,9 @@ Everything is customizable:
   - **Your own:** a key, a key combination, typed text, an app, a website, a folder, or a
     PowerShell command.
 - **Lock** has separate tap, double-tap and hold actions, with a hold time from 0.5 to 5 s.
-- **Modifier keys:** control, option and command on each side can act as Ctrl, Alt or Win.
-  For Mac-style shortcuts, set command to Ctrl, so that command+C copies.
+- **Modifier keys:** fn, control, and option and command on each side can each act as Ctrl,
+  Alt, Win, Shift, Fn, the Menu (context-menu "list") key, the Copilot key, or nothing. For
+  Mac-style shortcuts, set command to Ctrl, so that command+C copies; or swap fn and control.
 - **Live view:** while the settings window is open, it shows the keys you hold and what
   they will do.
 - **Battery:** the tray icon shows the keyboard's charge as a number over a level bar (green
@@ -187,7 +188,7 @@ ISO mounted (any drive letter, or set `EWDK` to its root) and the .NET Framework
 that comes with Windows. From the repository root:
 
 ```powershell
-.\Build-Package.ps1 -Version 1.2.3   # tray app, signed driver package, release assets in dist\
+.\Build-Package.ps1 -Version 1.3.0   # tray app, signed driver package, release assets in dist\
 ```
 
 `driver\Build.cmd` signs with a local WDK test certificate whose thumbprint is set in the

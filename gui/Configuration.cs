@@ -20,11 +20,14 @@ namespace MagicKeyboard {
   public int LockHoldMs {get;set;} // how long Lock is held for its hold action
   public const int MinLockHoldMs=500,MaxLockHoldMs=5000;
   public Binding[] Keys {get;set;}
-  // What each modifier key acts as: "control", "option" (Alt) or "command" (Win).
-  // Order: left control, left option, left command, right command, right option.
+  // What each modifier key (and fn) acts as: one of ModifierTargets.
+  // Order: left control, left option, left command, right command, right option, fn.
   public string[] Modifiers {get;set;}
-  public static readonly string[] ModifierDefaults={"control","option","command","command","option"};
-  public static readonly string[] ModifierTargets={"control","option","command"};
+  public static readonly string[] ModifierDefaults={"control","option","command","command","option","fn"};
+  // control = Ctrl, option = Alt, command = Win, fn = the Fn layer, menu = the context-menu
+  // ("list") key, copilot = the Windows Copilot key, none = nothing.
+  public static readonly string[] ModifierTargets={"control","option","command","shift","fn","menu","copilot","none"};
+  public const int FnModifier=5; // index of fn in Modifiers
   public Binding[] Gestures {get;set;}
   public static readonly string Folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"MagicKeyboardControls");
   public static readonly string FileName=Path.Combine(Folder,"settings.json");
@@ -72,6 +75,8 @@ namespace MagicKeyboard {
    // Fn itself has only a tap action.
    SetBinding(13,1,new Binding());SetBinding(13,2,new Binding());
    if(LockHoldMs==0)LockHoldMs=1000;
+   // Profiles before fn could be remapped have five entries: keep them and add fn.
+   if(Modifiers!=null && Modifiers.Length==ModifierDefaults.Length-1)Modifiers=Modifiers.Concat(new[]{ModifierDefaults[FnModifier]}).ToArray();
    if(Modifiers==null || Modifiers.Length!=ModifierDefaults.Length)Modifiers=(string[])ModifierDefaults.Clone();
    foreach(string m in Modifiers)if(Array.IndexOf(ModifierTargets,m)<0)throw new InvalidDataException("Unknown modifier key mapping.");
    if(LockHoldMs<MinLockHoldMs || LockHoldMs>MaxLockHoldMs) throw new InvalidDataException("Lock hold time must be 0.5 to 5 seconds.");

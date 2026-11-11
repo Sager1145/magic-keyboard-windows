@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.3.0
+
+### New
+
+- **Remap any modifier key, fn included.** fn, left control, and option and command on each
+  side can each act as Ctrl, Alt, Win, Shift, Fn, the Menu (context-menu "list") key, the
+  Copilot key, or nothing. For example, swap fn and control: the key acting as Fn holds the
+  function-row actions and does fn's tap action. The driver does the remapping, so it works
+  in every app and at the sign-in screen.
+- Menu and Copilot go out on the driver's virtual keyboard; Copilot sends Left Shift + Win +
+  F23, as a Copilot key does.
+- The settings window shows an **Acts as** list for each modifier key and for fn, and the
+  keycaps show what each key acts as.
+
+### Changed
+
+- Driver profile version 3: `FnMap` takes the unused field after `LockHoldMs`, and the
+  modifier map accepts the new targets. Profiles saved by earlier versions are migrated, so
+  existing settings keep working. The settings app needs this driver version.
+
 ## 1.2.3
 
 Bug fixes found in a second round of code reviews of 1.2.2, and clearer connection status

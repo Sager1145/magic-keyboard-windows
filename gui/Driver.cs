@@ -70,7 +70,7 @@ namespace MagicKeyboard {
 
   public static byte[] Build(Configuration c) {
    byte[] b=new byte[ConfigSize];
-   BitConverter.GetBytes(2).CopyTo(b,0);
+   BitConverter.GetBytes(3).CopyTo(b,0); // MAGICKB_CONFIG_VERSION
    BitConverter.GetBytes(c.RequireFn?0:1).CopyTo(b,4);
    BitConverter.GetBytes((ushort)300).CopyTo(b,8);
    BitConverter.GetBytes((ushort)650).CopyTo(b,10);
@@ -81,11 +81,24 @@ namespace MagicKeyboard {
     if(g==0)Put(b,76,c.GetBinding(13,0)); // Fn itself has only a tap action
    }
    for(int i=0;i<8;i++)b[88+i]=(byte)i;
-   for(int m=0;m<ModifierBits.Length;m++){
-    int side=ModifierBits[m]&4;
-    b[88+ModifierBits[m]]=(byte)(side+(c.Modifiers[m]=="control"?0:c.Modifiers[m]=="option"?2:3));
-   }
+   for(int m=0;m<ModifierBits.Length;m++)b[88+ModifierBits[m]]=Target(c.Modifiers[m],ModifierBits[m]&4);
+   b[14]=Target(c.Modifiers[Configuration.FnModifier],0); // FnMap; a modifier target is the left-hand one
    return b;
+  }
+
+  // MAGICKB_CONFIG ModifierMap / FnMap value: a modifier bit on the key's own side (0 left,
+  // 4 right), or MAGICKB_MAP_FN 8, _MENU 9, _COPILOT 10, _NONE 11.
+  static byte Target(string target,int side){
+   switch(target){
+    case "control":return (byte)(side+0);
+    case "shift":return (byte)(side+1);
+    case "option":return (byte)(side+2);
+    case "command":return (byte)(side+3);
+    case "fn":return 8;
+    case "menu":return 9;
+    case "copilot":return 10;
+    default:return 11;
+   }
   }
 
   static void Put(byte[] b,int offset,Binding binding){

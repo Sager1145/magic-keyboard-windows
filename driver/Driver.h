@@ -64,7 +64,15 @@ extern "C" {
 
 	#define MAGICKB_FLAG_ACTIONS_FIRST 0x1 // actions without Fn; hold Fn for F1-F12
 
-	#define MAGICKB_CONFIG_VERSION 2
+	#define MAGICKB_CONFIG_VERSION 3 // 3: FnMap, and ModifierMap targets beyond the 8 modifier bits
+
+	// Remap targets for ModifierMap[] and FnMap: 0-7 a modifier bit (0 LCtrl, 1 LShift,
+	// 2 LAlt, 3 LGui, 4-7 the right-hand ones), or one of these.
+	#define MAGICKB_MAP_FN      8  // the Fn layer (F-row actions, Fn gestures)
+	#define MAGICKB_MAP_MENU    9  // Application / context-menu key (keyboard usage 0x65)
+	#define MAGICKB_MAP_COPILOT 10 // Copilot key: Left Shift + Left Win + F23, as Windows expects
+	#define MAGICKB_MAP_NONE    11 // nothing
+	#define MAGICKB_MAP_MAX     11
 	#define MAGICKB_GESTURE_LOCK 0
 	#define MAGICKB_GESTURE_FN   1
 
@@ -82,12 +90,13 @@ extern "C" {
 		USHORT DoubleTapMs;
 		USHORT LongPressMs; // Fn long press, evaluated at release
 		USHORT LockHoldMs; // Lock long press, fires while held
-		USHORT Reserved;
+		UCHAR FnMap; // what the Fn key acts as (MAGICKB_MAP_*; MAGICKB_MAP_FN by default)
+		UCHAR Reserved;
 		MAGICKB_ACTION Row[12]; // action layer of F1-F12
 		MAGICKB_ACTION Gesture[2][3]; // [Lock, Fn][single, double, long]
 		// Modifier remap: for each modifier bit of the keyboard's report (0 LCtrl, 1 LShift,
-		// 2 LAlt/Option, 3 LGui/Command, 4-7 the right-hand ones), the bit it becomes.
-		// Identity is { 0, 1, ..., 7 }.
+		// 2 LAlt/Option, 3 LGui/Command, 4-7 the right-hand ones), what it acts as: a
+		// modifier bit or a MAGICKB_MAP_* target. Identity is { 0, 1, ..., 7 }.
 		UCHAR ModifierMap[8];
 	} MAGICKB_CONFIG;
 

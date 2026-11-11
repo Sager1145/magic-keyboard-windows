@@ -52,6 +52,9 @@ static UCHAR g_LastEvent[MAGICKB_REPORT_LENGTH]; // last report event sent to th
 static KEVENT g_ConfigGate; // serializes SET_CONFIG (save + apply) at PASSIVE_LEVEL
 static MAGICKB_ACTION g_Held[12]; // action started by each action-layer row key
 static UCHAR g_KeyMods, g_Keys[6]; // virtual keyboard state
+static UCHAR g_Remap; // remapped keys held on the virtual keyboard: REMAP_MENU | REMAP_COPILOT
+#define REMAP_MENU    0x01
+#define REMAP_COPILOT 0x02
 static USHORT g_Consumer[2];
 static UCHAR g_System;
 
@@ -95,6 +98,18 @@ static void DefaultConfig(MAGICKB_CONFIG* c)
 	SetAction(&c->Gesture[MAGICKB_GESTURE_LOCK][2], MAGICKB_ACTION_CHORD, 0x08, 0x0F); // Win+L
 	for (UCHAR i = 0; i < 8; ++i)
 		c->ModifierMap[i] = i; // Control, Option (Alt) and Command (Win) as labeled
+	c->FnMap = MAGICKB_MAP_FN;
+}
+
+// A version 2 profile (no FnMap, modifier bits only) becomes version 3 unchanged in effect.
+static void MigrateConfig(MAGICKB_CONFIG* c)
+{
+	if (c->Version == 2)
+	{
+		c->Version = MAGICKB_CONFIG_VERSION;
+		c->FnMap = MAGICKB_MAP_FN;
+		c->Reserved = 0;
+	}
 }
 
 static BOOLEAN ValidAction(const MAGICKB_ACTION* a, BOOLEAN gesture)
@@ -126,8 +141,10 @@ static BOOLEAN ValidConfig(const MAGICKB_CONFIG* c)
 		c->LockHoldMs < 500 || c->LockHoldMs > 5000)
 		return FALSE;
 	for (int i = 0; i < 8; ++i)
-		if (c->ModifierMap[i] > 7)
+		if (c->ModifierMap[i] > MAGICKB_MAP_MAX)
 			return FALSE;
+	if (c->FnMap > MAGICKB_MAP_MAX || c->Reserved)
+		return FALSE;
 	// Fn itself has only a tap action.
 	if (c->Gesture[MAGICKB_GESTURE_FN][1].Type != MAGICKB_ACTION_NONE ||
 		c->Gesture[MAGICKB_GESTURE_FN][2].Type != MAGICKB_ACTION_NONE)
@@ -167,6 +184,7 @@ static BOOLEAN LoadConfig(MAGICKB_CONFIG* config)
 	if (!NT_SUCCESS(status) || value->Type != REG_BINARY || value->DataLength != sizeof(MAGICKB_CONFIG))
 		return FALSE;
 	RtlCopyMemory(config, value->Data, sizeof(MAGICKB_CONFIG));
+	MigrateConfig(config);
 	return ValidConfig(config);
 }
 
@@ -204,12 +222,20 @@ static void SubmitKeyboard(UCHAR extraModifiers, UCHAR extraUsage)
 	UCHAR report[9] = { 0 };
 	report[1] = g_KeyMods | extraModifiers;
 	RtlCopyMemory(&report[3], g_Keys, sizeof(g_Keys));
-	for (int i = 3; extraUsage && i < 9; ++i)
-		if (!report[i])
-		{
-			report[i] = extraUsage;
-			break;
-		}
+	// A modifier key remapped to Menu or Copilot holds that key here while it is down.
+	UCHAR remap[2] = { (g_Remap & REMAP_MENU) ? 0x65 : 0, (g_Remap & REMAP_COPILOT) ? 0x72 : 0 };
+	if (g_Remap & REMAP_COPILOT)
+		report[1] |= 0x0A; // Left Shift + Left Win, with F23
+	for (int r = 0; r < 3; ++r)
+	{
+		UCHAR usage = r < 2 ? remap[r] : extraUsage;
+		for (int i = 3; usage && i < 9; ++i)
+			if (!report[i] || report[i] == usage)
+			{
+				report[i] = usage;
+				break;
+			}
+	}
 	Submit(1, report, sizeof(report));
 }
 
@@ -437,6 +463,12 @@ static VOID TimerDpc(PKDPC dpc, PVOID context, PVOID arg1, PVOID arg2)
 // Releases everything the virtual device holds and forgets in-progress presses.
 static void ResetState(void)
 {
+	// Release a remapped Menu / Copilot key on the virtual keyboard it was pressed on.
+	if (g_Remap)
+	{
+		g_Remap = 0;
+		SubmitKeyboard(0, 0);
+	}
 	// Clear each bit before its release, so the rebuild in ActionUp never re-adds a key
 	// that is being released here.
 	for (int i = 0; i < 12; ++i)
@@ -607,16 +639,31 @@ void EngineProcessReport(UCHAR* report, PDEVICE_EXTENSION extension)
 
 	KIRQL irql;
 	KeAcquireSpinLock(&g_EngineLock, &irql);
-	// Remap Control / Option / Command first, so Windows and the action layer both see
-	// the remapped modifiers.
-	UCHAR mods = 0;
-	for (int i = 0; i < 8; ++i)
-		if (report[1] & (1 << i))
-			mods |= (UCHAR)(1 << (g_Config.ModifierMap[i] & 7));
+	// Remap the modifier keys and Fn first, so Windows, the action layer and the Fn
+	// gestures all see what each key acts as: another modifier, Fn, Menu, Copilot or
+	// nothing. Menu and Copilot go out on the virtual keyboard (not every keyboard's own
+	// report descriptor carries those usages).
+	UCHAR mods = 0, remap = 0;
+	BOOLEAN fn = FALSE;
+	for (int i = 0; i < 9; ++i)
+	{
+		BOOLEAN down = i < 8 ? (report[1] & (1 << i)) != 0 : (report[9] & 0x02) != 0;
+		if (!down)
+			continue;
+		UCHAR target = i < 8 ? g_Config.ModifierMap[i] : g_Config.FnMap;
+		if (target < 8)
+			mods |= (UCHAR)(1 << target);
+		else if (target == MAGICKB_MAP_FN)
+			fn = TRUE;
+		else if (target == MAGICKB_MAP_MENU)
+			remap |= REMAP_MENU;
+		else if (target == MAGICKB_MAP_COPILOT)
+			remap |= REMAP_COPILOT;
+	}
 	report[1] = mods;
-	BOOLEAN fn = (report[9] & 0x02) != 0;
+	report[9] = (UCHAR)((report[9] & ~0x02) | (fn ? 0x02 : 0));
 	BOOLEAN lock = (report[9] & lockMask) != 0;
-	BOOLEAN other = report[1] != 0 || (report[9] & 0x0D & ~lockMask) != 0;
+	BOOLEAN other = report[1] != 0 || remap != 0 || (report[9] & 0x0D & ~lockMask) != 0;
 	USHORT row = 0;
 	for (int i = 3; i < 9; ++i)
 	{
@@ -644,6 +691,11 @@ void EngineProcessReport(UCHAR* report, PDEVICE_EXTENSION extension)
 		ResetState();
 		g_Vhf = vhf;
 		g_PrevRow = g_Swallow = 0;
+	}
+	if (remap != g_Remap)
+	{
+		g_Remap = remap;
+		SubmitKeyboard(0, 0);
 	}
 	BOOLEAN actionLayer = (g_Config.Flags & MAGICKB_FLAG_ACTIONS_FIRST) ? !fn : fn;
 	USHORT pressed = row & ~g_PrevRow, released = g_PrevRow & ~row;

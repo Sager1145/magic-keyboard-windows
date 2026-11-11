@@ -29,7 +29,7 @@ namespace MagicKeyboard {
   KeyboardRow keyboard;Segmented mode,press;RoundCombo action;Field valueField;TextBox value;RoundButton valueButton,tryIt,reset;
   Label title,subtitle,valueLabel,hint,error,status,live;StatusStrip strip;Label modeCaption;Stepper holdTime;FlowLayoutPanel holdRow;
   TableLayoutPanel editor,titleRow,footer;Panel header;Label modHint;RoundButton restore;
-  ModifierRow modifiers;Segmented actsAs;Label actionLabel;FlowLayoutPanel modRow;
+  ModifierRow modifiers;RoundCombo actsAs;Label actionLabel;FlowLayoutPanel modRow;
   bool filling;int key,gesture,lastAction=-1;
   readonly System.Windows.Forms.Timer statusPoll=new System.Windows.Forms.Timer{Interval=1000};
   readonly ToolTip chipTips=new ToolTip();
@@ -98,7 +98,9 @@ namespace MagicKeyboard {
    page.Controls.Add(keyboard,0,1);
    // Bottom row: fn, then control, option and command on both sides of the space bar
    modifiers=new ModifierRow{Dock=DockStyle.Top,Margin=new Padding(0,0,0,12),Font=Font};
-   modifiers.Bind(()=>Theme.Glyph(KeyCapAction(13)),m=>TargetShort(draft.Modifiers[m]),m=>draft.Modifiers[m]!=Configuration.ModifierDefaults[m],k=>k==13?KeyName(13)+": "+Summary(13):ModifierTitle(k-20)+": acts as "+TargetLong(draft.Modifiers[k-20]));
+   modifiers.Bind(()=>Theme.Glyph(KeyCapAction(13)),m=>TargetShort(draft.Modifiers[m]),m=>draft.Modifiers[m]!=Configuration.ModifierDefaults[m],
+    k=>k==13?(FnRemapped?"Fn: acts as "+TargetLong(draft.Modifiers[Configuration.FnModifier]):KeyName(13)+": "+Summary(13)):ModifierTitle(k-20)+": acts as "+TargetLong(draft.Modifiers[k-20]));
+   modifiers.FnRemap=()=>FnRemapped?TargetShort(draft.Modifiers[Configuration.FnModifier]):null;
    modifiers.SelectedChanged+=(s,e)=>Select(modifiers.SelectedKey,0);
    page.Controls.Add(modifiers,0,2);
    // Live line: the key or combination being pressed and what it does
@@ -145,7 +147,10 @@ namespace MagicKeyboard {
    hint=MakeLabel("",9,FontStyle.Regular,Theme.Muted);hint.MaximumSize=new Size(800,0);hint.Margin=new Padding(3,12,3,0);editor.Controls.Add(hint,0,4);
    FlowLayoutPanel buttons=new FlowLayoutPanel{AutoSize=true,Dock=DockStyle.Fill,BackColor=Theme.Card};
    tryIt=FlatButton("Try it",true);tryIt.Click+=(s,e)=>TryAction();
-   reset=FlatButton("Use default",false);reset.Click+=(s,e)=>{if(key>=20){draft.Modifiers[key-20]=Configuration.ModifierDefaults[key-20];modifiers.Invalidate();Select(key,0);Changed();return;}draft.SetBinding(key,gesture,Configuration.DefaultBinding(key,gesture));Select(key,gesture);keyboard.Invalidate();modifiers.Invalidate();Changed();};
+   reset=FlatButton("Use default",false);reset.Click+=(s,e)=>{
+    if(key>=20){draft.Modifiers[key-20]=Configuration.ModifierDefaults[key-20];modifiers.Invalidate();Select(key,0);Changed();return;}
+    if(key==13)draft.Modifiers[Configuration.FnModifier]=Configuration.ModifierDefaults[Configuration.FnModifier];
+    draft.SetBinding(key,gesture,Configuration.DefaultBinding(key,gesture));Select(key,gesture);keyboard.Invalidate();modifiers.Invalidate();Changed();};
    buttons.Controls.AddRange(new Control[]{tryIt,reset});editor.Controls.Add(buttons,0,9);
    // Lock hold time, shown with Lock's Hold action
    holdRow=new FlowLayoutPanel{AutoSize=true,Dock=DockStyle.Top,WrapContents=false,BackColor=Theme.Card,Margin=new Padding(0,14,0,8)};
@@ -156,9 +161,18 @@ namespace MagicKeyboard {
    holdRow.Controls.AddRange(new Control[]{holdLabel,holdTime,holdUnit});
    // What a modifier key acts as, shown for the bottom-row keys
    modRow=new FlowLayoutPanel{AutoSize=true,Dock=DockStyle.Top,FlowDirection=FlowDirection.TopDown,WrapContents=false,BackColor=Theme.Card,Margin=new Padding(0,4,0,8)};
-   actsAs=new Segmented{Items=new[]{"Control (Ctrl)","Option (Alt)","Command (Win)"},Width=420,Margin=new Padding(3,0,3,12),Font=Font};
-   actsAs.SelectedChanged+=(s,e)=>{if(filling||key<20)return;draft.Modifiers[key-20]=Configuration.ModifierTargets[actsAs.Selected];modifiers.Invalidate();Select(key,0);Changed();};
-   modHint=MakeLabel("The keyboard driver remaps the key itself, so it works in every app, even when this app isn't running. Shortcuts follow: with Command acting as Ctrl, Command+C copies.",9,FontStyle.Regular,Theme.Muted);
+   Label actsAsLabel=MakeLabel("Acts as",9.75f,FontStyle.Bold,Theme.Ink);actsAsLabel.Margin=new Padding(3,0,3,0);
+   actsAs=new RoundCombo{Width=420,Margin=new Padding(3,4,3,12),MaxDropDownItems=TargetNames.Length};
+   foreach(string t in TargetNames)actsAs.Items.Add(t);
+   actsAs.DrawItem+=DrawTarget;
+   actsAs.SelectedIndexChanged+=(s,e)=>{
+    int m=key>=20?key-20:key==13?Configuration.FnModifier:-1;
+    if(filling||m<0||actsAs.SelectedIndex<0)return;
+    draft.Modifiers[m]=Configuration.ModifierTargets[actsAs.SelectedIndex];
+    modifiers.Invalidate();Select(key,0);Changed();
+   };
+   modHint=MakeLabel("",9,FontStyle.Regular,Theme.Muted);
+   modRow.Controls.Add(actsAsLabel);
    modHint.MaximumSize=new Size(800,0);modHint.Margin=new Padding(3,0,3,0);
    modRow.Controls.AddRange(new Control[]{actsAs,modHint});
    FlowLayoutPanel extras=new FlowLayoutPanel{AutoSize=true,Dock=DockStyle.Top,FlowDirection=FlowDirection.TopDown,WrapContents=false,BackColor=Theme.Card,Margin=new Padding(0)};
@@ -275,8 +289,26 @@ namespace MagicKeyboard {
   }
 
   static string ModifierTitle(int m){string n=ModifierRow.Names[m];return (m<3?"Left ":"Right ")+Char.ToUpperInvariant(n[0])+n.Substring(1);}
-  static string TargetShort(string t){return t=="control"?"Ctrl":t=="option"?"Alt":"Win";}
-  static string TargetLong(string t){return t=="control"?"Ctrl":t=="option"?"Alt":"the Windows key";}
+  // Choices for "Acts as", in Configuration.ModifierTargets order.
+  static readonly string[] TargetNames={"Control (Ctrl)","Option (Alt)","Command (Windows key)","Shift","Fn (function-row actions)","Menu (≣ context-menu key)","Copilot (Windows AI key)","Nothing"};
+  static string TargetShort(string t){
+   switch(t){case "control":return "Ctrl";case "option":return "Alt";case "command":return "Win";case "shift":return "Shift";
+    case "fn":return "Fn";case "menu":return "Menu";case "copilot":return "Copilot";default:return "Off";}
+  }
+  static string TargetLong(string t){
+   switch(t){case "control":return "Ctrl";case "option":return "Alt";case "command":return "the Windows key";case "shift":return "Shift";
+    case "fn":return "Fn";case "menu":return "the Menu key";case "copilot":return "the Copilot key";default:return "nothing";}
+  }
+  bool FnRemapped{get{return draft.Modifiers[Configuration.FnModifier]!="fn";}}
+  const string ModHintText="The keyboard driver remaps the key itself, so it works in every app, even when this app isn't running. Shortcuts follow: with Command acting as Ctrl, Command+C copies. A key set to Fn holds the function-row actions and does Fn's tap action.";
+  void DrawTarget(object sender,DrawItemEventArgs e){
+   if(e.Index<0)return;
+   bool inEdit=(e.State&DrawItemState.ComboBoxEdit)!=0;
+   bool selected=(e.State&DrawItemState.Selected)!=0 && !inEdit;
+   using(SolidBrush back=new SolidBrush(selected?Theme.Accent:inEdit?e.BackColor:Theme.Raised))e.Graphics.FillRectangle(back,e.Bounds);
+   int x=e.Bounds.X+(inEdit?6:14);
+   TextRenderer.DrawText(e.Graphics,TargetNames[e.Index],e.Font,new Rectangle(x,e.Bounds.Y,e.Bounds.Width-x,e.Bounds.Height),selected?Theme.AccentInk:Theme.Ink,TextFormatFlags.VerticalCenter|TextFormatFlags.Left|TextFormatFlags.EndEllipsis);
+  }
   // Modifier keys (20-24): only "acts as" applies.
   void SelectModifier(int m){
    key=20+m;gesture=0;
@@ -285,10 +317,10 @@ namespace MagicKeyboard {
    press.Visible=false;holdRow.Visible=false;
    title.Text=ModifierTitle(m);
    subtitle.Text="The "+ModifierRow.Symbols[m]+" "+ModifierRow.Names[m]+" key "+(m<3?"left":"right")+" of the space bar.  Default: "+TargetLong(Configuration.ModifierDefaults[m])+".";
-   actionLabel.Text="Acts as";action.Visible=false;hint.Visible=false;
+   actionLabel.Visible=false;action.Visible=false;hint.Visible=false; // the "Acts as" row has its own label
    valueLabel.Visible=valueField.Parent.Visible=false;editor.RowStyles[6].Height=0;ShowError(null);
-   tryIt.Visible=false;modRow.Visible=true;
-   actsAs.Selected=Array.IndexOf(Configuration.ModifierTargets,draft.Modifiers[m]);
+   tryIt.Visible=false;modRow.Visible=true;modHint.Text=ModHintText;
+   actsAs.SelectedIndex=Array.IndexOf(Configuration.ModifierTargets,draft.Modifiers[m]);
    filling=false;
   }
 
@@ -298,11 +330,19 @@ namespace MagicKeyboard {
   void Select(int k,int g){
    if(IsHandleCreated)BeginInvoke((Action)Reflow); // the title width changes with the key
    if(k>=20){SelectModifier(k-20);return;}
-   modifiers.SelectedKey=k;actionLabel.Text="Action";action.Visible=hint.Visible=tryIt.Visible=true;modRow.Visible=false;
+   modifiers.SelectedKey=k;actionLabel.Text=k==13?"Tap action":"Action";actionLabel.Visible=action.Visible=hint.Visible=tryIt.Visible=true;modRow.Visible=false;
    if(k==13)g=0; // Fn itself has only a tap action
    key=k;gesture=g;
    Binding b=draft.GetBinding(k,g);
    filling=true;
+   if(k==13){
+    // Fn: its tap action, and what the key acts as (another key makes the tap action moot).
+    modRow.Visible=true;
+    actsAs.SelectedIndex=Array.IndexOf(Configuration.ModifierTargets,draft.Modifiers[Configuration.FnModifier]);
+    modHint.Text=FnRemapped
+     ?"Fn acts as "+TargetLong(draft.Modifiers[Configuration.FnModifier])+", so the tap action above doesn't apply. Set another key's \"Acts as\" to Fn to keep the function-row actions."
+     :"Fn holds the function-row actions and does the tap action above. Choose another key here to swap it, for example with Control.";
+   }
    keyboard.SelectedKey=k;
    press.Visible=k==12;press.Selected=g;
    holdRow.Visible=k==12&&g==2;holdTime.Value=draft.LockHoldMs/1000m;

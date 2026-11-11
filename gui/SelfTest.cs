@@ -61,7 +61,8 @@ namespace MagicKeyboard {
   // Mirrors DefaultConfig() in driver\Mapping.c: the driver must behave the same with or without the app.
   static void TestDriverProfile(){
    byte[] expected=new byte[Driver.ConfigSize];
-   expected[0]=2;expected[8]=0x2C;expected[9]=1;expected[10]=0x8A;expected[11]=2;expected[12]=0xE8;expected[13]=3;
+   expected[0]=3;expected[14]=8; // version 3; FnMap = MAGICKB_MAP_FN
+   expected[8]=0x2C;expected[9]=1;expected[10]=0x8A;expected[11]=2;expected[12]=0xE8;expected[13]=3;
    ushort[] consumer={0x70,0x6F,0,0,0,0,0xB6,0xCD,0xB5,0xE2,0xEA,0xE9};
    byte[] chord={0,0,0x2B,0x16,0x0B,0x16};
    for(int i=0;i<12;i++){
@@ -79,6 +80,16 @@ namespace MagicKeyboard {
    Configuration mac=Configuration.Create();mac.Modifiers[0]="command";mac.Modifiers[2]="control";mac.Modifiers[3]="control";
    byte[] swapped=Driver.Build(mac);
    if(swapped[88]!=3||swapped[91]!=0||swapped[95]!=4||swapped[94]!=6)throw new Exception("Modifier remap did not build.");
+   // Swap fn and control; right option as Menu, right command as Copilot, left option off.
+   Configuration any=Configuration.Create();
+   any.Modifiers[0]="fn";any.Modifiers[Configuration.FnModifier]="control";any.Modifiers[4]="menu";any.Modifiers[3]="copilot";any.Modifiers[1]="none";
+   any.Validate();
+   byte[] remapped=Driver.Build(any);
+   if(remapped[88]!=8||remapped[14]!=0||remapped[94]!=9||remapped[95]!=10||remapped[90]!=11)throw new Exception("Fn / Menu / Copilot / none remap did not build.");
+   any.Modifiers[2]="shift";if(Driver.Build(any)[91]!=1)throw new Exception("Shift target did not build.");
+   // A profile saved before fn could be remapped has five modifier entries; fn is added as Fn.
+   Configuration old=Configuration.Create();old.Modifiers=new[]{"command","option","control","command","option"};old.Validate();
+   if(old.Modifiers.Length!=6||old.Modifiers[Configuration.FnModifier]!="fn"||old.Modifiers[0]!="command")throw new Exception("Five-entry modifier profile did not migrate.");
    byte type,mods;ushort usage;
    Driver.Translate(new Binding("shortcut","Ctrl+Shift+F5"),out type,out mods,out usage);
    if(type!=Driver.Chord||mods!=3||usage!=0x3E)throw new Exception("Shortcut did not translate to HID.");

@@ -525,6 +525,9 @@ namespace MagicKeyboard {
   // label/changed take a modifier index (0-4); tip takes a key id.
   public void Bind(Func<string> fnGlyphOf,Func<int,string> labelOf,Func<int,bool> changedOf,Func<int,string> tipOf){fnGlyph=fnGlyphOf;label=labelOf;changed=changedOf;tip=tipOf;Invalidate();}
   public int SelectedKey{get{return selected<0?-1:Keys[selected];}set{int i=Array.IndexOf(Keys,value);if(i==selected)return;selected=i;Invalidate();}}
+  // What fn acts as when it isn't Fn (e.g. "Ctrl"), or null: the fn keycap then shows that
+  // like a remapped modifier instead of its tap-action icon.
+  public Func<string> FnRemap{get;set;}
   // Same bits as KeyboardRow.Held; only fn (bit 13) is drawn here.
   public int Held{get{return held;}set{if(held==value)return;held=value;Invalidate();}}
   // Slots: fn, control, option, command, space, command, option. When the top row splits,
@@ -555,20 +558,24 @@ namespace MagicKeyboard {
    Graphics g=e.Graphics;g.SmoothingMode=SmoothingMode.AntiAlias;g.TextRenderingHint=TextRenderingHint.ClearTypeGridFit;g.Clear(Parent!=null?Parent.BackColor:Theme.Back);
    RectangleF bar=Slot(4);
    if(bar.Width>0)using(GraphicsPath space=Theme.Round(bar,Theme.Radius))using(Pen dashed=new Pen(Theme.Line){DashStyle=DashStyle.Dash})g.DrawPath(dashed,space);
-   Theme.KeyCap(g,Cap(0),"fn",fnGlyph(),true,selected==0,hover==0,(held&(1<<13))!=0);
+   string fnAs=FnRemap==null?null:FnRemap();
+   if(fnAs==null)Theme.KeyCap(g,Cap(0),"fn",fnGlyph(),true,selected==0,hover==0,(held&(1<<13))!=0);
    float size=Cap(0).Width;
    using(Font small=new Font("Segoe UI",Math.Max(7f,size*0.14f)))
    using(Font big=new Font("Segoe UI Semibold",Math.Max(9f,size*0.22f))){
-    for(int m=0;m<Names.Length;m++){
-     int i=m+1;RectangleF r=Cap(i);bool sel=i==selected,moved=changed(m);
+    // Cap i: a key name at the top left and what it acts as in the middle.
+    Action<int,string,string,bool> draw=(i,name,acts,moved)=>{
+     RectangleF r=Cap(i);bool sel=i==selected;
      using(GraphicsPath cap=Theme.Round(r,Theme.Radius)){
       using(SolidBrush fill=new SolidBrush(sel?Theme.Accent:i==hover?Theme.Hover:Theme.Card))g.FillPath(fill,cap);
       using(Pen edge=new Pen(sel||moved?Theme.Accent:Theme.Line))g.DrawPath(edge,cap);
      }
      Color ink=sel?Theme.AccentInk:moved?Theme.Accent:Theme.Ink,muted=sel?Theme.AccentInk:Theme.Muted;
-     TextRenderer.DrawText(g,Symbols[m]+" "+Names[m],small,new Rectangle((int)(r.X+size*0.1f),(int)(r.Y+r.Height*0.08f),(int)(r.Width-size*0.15f),(int)(r.Height*0.35f)),muted,TextFormatFlags.Left|TextFormatFlags.NoPadding|TextFormatFlags.EndEllipsis);
-     TextRenderer.DrawText(g,label(m),big,new Rectangle((int)r.X,(int)(r.Y+r.Height*0.38f),(int)r.Width,(int)(r.Height*0.55f)),ink,TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter|TextFormatFlags.NoPadding);
-    }
+     TextRenderer.DrawText(g,name,small,new Rectangle((int)(r.X+size*0.1f),(int)(r.Y+r.Height*0.08f),(int)(r.Width-size*0.15f),(int)(r.Height*0.35f)),muted,TextFormatFlags.Left|TextFormatFlags.NoPadding|TextFormatFlags.EndEllipsis);
+     TextRenderer.DrawText(g,acts,big,new Rectangle((int)r.X,(int)(r.Y+r.Height*0.38f),(int)r.Width,(int)(r.Height*0.55f)),ink,TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter|TextFormatFlags.NoPadding|TextFormatFlags.EndEllipsis);
+    };
+    if(fnAs!=null)draw(0,"fn",fnAs,true);
+    for(int m=0;m<Names.Length;m++)draw(m+1,Symbols[m]+" "+Names[m],label(m),changed(m));
    }
   }
   protected override void Dispose(bool disposing){if(disposing)toolTip.Dispose();base.Dispose(disposing);}
